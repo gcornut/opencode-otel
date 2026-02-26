@@ -1,6 +1,6 @@
 # @gcornut/opencode-otel
 
-OpenTelemetry metrics and structured log events plugin for [OpenCode](https://opencode.ai). Mirrors the telemetry surface of Claude Code so you can reuse the same OTEL collector, dashboards, and env var conventions.
+OpenTelemetry metrics and structured log events plugin for [OpenCode](https://opencode.ai). Mirrors the telemetry surface of Claude Code so you can reuse the same OTEL collector and dashboards.
 
 ## Install
 
@@ -16,13 +16,7 @@ Or as a local plugin, copy the `src/` directory to `.opencode/plugins/otel/`.
 
 ## Configuration
 
-Configuration can be provided via a **JSON file**, **environment variables**, or both. When both are present, env vars take precedence over the JSON file, which takes precedence over built-in defaults.
-
-### JSON config file
-
-Create `~/.config/opencode/otel.json` (following the standard OpenCode plugin convention):
-
-You can override the path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/otel.json`.
+Create `~/.config/opencode/otel.json`:
 
 ```json
 {
@@ -48,14 +42,20 @@ You can override the path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/otel.json`.
 }
 ```
 
-All fields are optional — only set what you need. See the full schema below.
+All fields are optional except `endpoint` — without it, telemetry is disabled. Only set what you need.
+
+You can override the config file path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/otel.json`.
+
+### Config reference
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `endpoint` | string | *(required)* | Collector URL (e.g. `https://otel.example.com`) |
+| `metricsEndpoint` | string | | Override endpoint for metrics only |
+| `logsEndpoint` | string | | Override endpoint for logs only |
 | `metricsExporter` | string | `"otlp"` | `"otlp"`, `"console"`, or `"none"` |
 | `logsExporter` | string | `"otlp"` | `"otlp"`, `"console"`, or `"none"` |
 | `protocol` | string | `"grpc"` | `"grpc"`, `"http/json"`, or `"http/protobuf"` |
-| `endpoint` | string | `"http://localhost:4317"` | Collector URL |
 | `headers` | object | `{}` | HTTP headers for OTLP requests |
 | `resourceAttributes` | object | `{}` | Key-value pairs added to all telemetry |
 | `metricExportIntervalMs` | number | `60000` | Metrics export interval (ms) |
@@ -68,114 +68,39 @@ All fields are optional — only set what you need. See the full schema below.
 | `includeAccountUuid` | boolean | `true` | Include `user.account_uuid` on metrics |
 | `telemetryProfile` | string | `"opencode"` | `"opencode"` or `"claude-code"` — emit events using Claude Code's naming |
 
-### Environment variables
-
-Env vars follow the same conventions as Claude Code, so you can reuse your existing config directly. **Env vars always override JSON config values.**
-
-#### Core OTLP settings
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_METRICS_EXPORTER` | `otlp` | `otlp`, `console`, or `none` |
-| `OTEL_LOGS_EXPORTER` | `otlp` | `otlp`, `console`, or `none` |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | `grpc`, `http/json`, or `http/protobuf` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Collector URL |
-| `OTEL_EXPORTER_OTLP_HEADERS` | | `key=value,key=value` auth headers |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | | Override endpoint for metrics only |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | | Override endpoint for logs only |
-
-### Export intervals
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` | Metrics export interval (ms) |
-| `OTEL_LOGS_EXPORT_INTERVAL` | `5000` | Logs export interval (ms) |
-
-### Temporality
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `delta` | `delta` or `cumulative` |
-
-### Privacy controls
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_LOG_USER_PROMPTS` | `false` | Set `true` to include prompt text in events |
-| `OTEL_LOG_TOOL_DETAILS` | `false` | Set `true` to include tool names and args |
-
-### Cardinality controls
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_METRICS_INCLUDE_SESSION_ID` | `true` | Include `session.id` attribute |
-| `OTEL_METRICS_INCLUDE_VERSION` | `false` | Include `app.version` attribute |
-| `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` | `true` | Include `user.account_uuid` attribute |
-
 ### Telemetry profile
-
-| Variable | Default | Description |
-|---|---|---|
-| `OTEL_TELEMETRY_PROFILE` | `opencode` | `"opencode"` or `"claude-code"` — see below |
 
 When set to `"claude-code"`, the plugin emits telemetry that is **indistinguishable** from Claude Code's built-in telemetry: same `service.name` (`claude-code`), same meter name (`com.anthropic.claude_code`), same metric names (`claude_code.*`), and same event names (`claude_code.*`). This lets you reuse Claude Code dashboards and alerting rules without any modification.
 
-### Resource attributes
+### Example: minimal config
 
-| Variable | Description |
-|---|---|
-| `OTEL_RESOURCE_ATTRIBUTES` | Custom `key=value,key=value` pairs added to all telemetry |
-
-### Resolution order
-
-When both JSON and env vars are present, the merge works as follows:
-
-1. **Env var** (if set and non-empty) wins
-2. **JSON config** (if field is present) fills in the rest
-3. **Built-in default** for anything not specified
-
-For `headers` and `resourceAttributes`, values from both sources are **merged** (env var keys override JSON keys on conflict).
-
-### Example: JSON config (recommended for teams)
-
-`~/.config/opencode/otel.json`:
 ```json
 {
-  "endpoint": "https://<endpoint>",
-  "protocol": "grpc",
-  "resourceAttributes": {
-    "team": "platform"
-  }
+  "endpoint": "https://otel-collector.example.com"
 }
 ```
 
-Per-developer override via env:
-```bash
-export OTEL_RESOURCE_ATTRIBUTES="user.email=yourname@company.com"
+### Example: with per-signal endpoints
+
+```json
+{
+  "endpoint": "https://otel-collector.example.com",
+  "metricsEndpoint": "https://metrics.example.com/v1/metrics",
+  "logsEndpoint": "https://logs.example.com/v1/logs"
+}
 ```
 
-Result: the endpoint and protocol come from JSON, and the resource attributes are merged (`team=platform` + `user.email=yourname@company.com`).
+### Disabling telemetry
 
-To use a custom config path:
-```bash
-export OPENCODE_OTEL_CONFIG_PATH="/path/to/my/otel.json"
+To disable telemetry without removing the plugin, set both exporters to `"none"`:
+
+```json
+{
+  "endpoint": "https://otel-collector.example.com",
+  "metricsExporter": "none",
+  "logsExporter": "none"
+}
 ```
-
-### Example: env vars only (Claude Code compatible)
-
-```bash
-export OTEL_METRICS_EXPORTER="otlp"
-export OTEL_LOGS_EXPORTER="otlp"
-export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://<endpoint>"
-export OTEL_LOG_USER_PROMPTS="false"
-export OTEL_METRICS_INCLUDE_ACCOUNT_UUID="true"
-export OTEL_METRICS_INCLUDE_SESSION_ID="true"
-export OTEL_METRICS_INCLUDE_VERSION="false"
-export OTEL_RESOURCE_ATTRIBUTES="user.email=yourname@company.com"
-```
-
-These are the exact same env vars Claude Code uses. The plugin reads them identically.
 
 ## Exported Metrics
 
@@ -216,13 +141,14 @@ All telemetry includes:
 | `service.version` | Plugin version | Plugin version |
 | `os.type` | `darwin`, `linux`, `win32` | `darwin`, `linux`, `win32` |
 | `host.arch` | `arm64`, `x64`, etc. | `arm64`, `amd64`, etc. (Go-style) |
-| *(custom)* | From `OTEL_RESOURCE_ATTRIBUTES` | From `OTEL_RESOURCE_ATTRIBUTES` |
+| *(custom)* | From `resourceAttributes` config | From `resourceAttributes` config |
 
 ## Differences from Claude Code
 
 | Feature | Claude Code | opencode-otel |
 |---|---|---|
 | Master toggle | `CLAUDE_CODE_ENABLE_TELEMETRY=1` | Always on (set exporters to `none` to disable) |
+| Configuration | Env vars (`OTEL_*`) | JSON file (`~/.config/opencode/otel.json`) |
 | Impersonation | N/A | `telemetryProfile: "claude-code"` emits identical naming |
 | Prometheus exporter | Supported | Not yet (use OTLP -> Prometheus remote write) |
 | Traces | Not supported | Not supported |

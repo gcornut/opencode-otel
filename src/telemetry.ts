@@ -173,15 +173,13 @@ function createLogProcessor(config: OtelConfig): LogRecordProcessor | null {
 }
 
 function buildMetricsUrl(config: OtelConfig): string {
-  const override = process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
-  if (override) return override
+  if (config.metricsEndpoint) return config.metricsEndpoint
   if (config.protocol === "grpc") return config.endpoint
   return `${config.endpoint}/v1/metrics`
 }
 
 function buildLogsUrl(config: OtelConfig): string {
-  const override = process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
-  if (override) return override
+  if (config.logsEndpoint) return config.logsEndpoint
   if (config.protocol === "grpc") return config.endpoint
   return `${config.endpoint}/v1/logs`
 }

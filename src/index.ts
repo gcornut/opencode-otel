@@ -5,7 +5,7 @@
  * log events to an OTEL collector via OTLP (gRPC or HTTP).
  *
  * Enable by adding "opencode-otel" to your opencode.json plugins array
- * and setting the standard OTEL_* env vars.
+ * and creating a config file at ~/.config/opencode/otel.json.
  *
  * See README.md for full configuration reference.
  */
@@ -40,8 +40,8 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
   // If no endpoint is configured, warn and disable telemetry
   if (!config) {
     log.warn(
-      "no OTLP endpoint configured — set OTEL_EXPORTER_OTLP_ENDPOINT or add " +
-      '"endpoint" to ~/.config/opencode/otel.json. Telemetry disabled.',
+      'no OTLP endpoint configured — add "endpoint" to ' +
+      "~/.config/opencode/otel.json. Telemetry disabled.",
     )
     return {}
   }

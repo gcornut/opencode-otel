@@ -68,64 +68,20 @@ cost and cache token counts) may not be available or may require heuristics.
 | | Claude Code | opencode-otel |
 |---|---|---|
 | Master toggle | `CLAUDE_CODE_ENABLE_TELEMETRY=1` required | Always active when plugin is loaded |
-| Disable | Unset the env var | Set `metricsExporter` and `logsExporter` to `"none"` |
+| Disable | Unset the env var | Set `metricsExporter` and `logsExporter` to `"none"` in JSON config |
 | No-op cost | Zero (SDK not initialized) | Zero (empty hooks returned, SDK not initialized) |
 
 ### 2.2 Configuration sources
 
 | | Claude Code | opencode-otel |
 |---|---|---|
-| Env vars | Standard `OTEL_*` + Claude-specific vars | Same `OTEL_*` env vars (compatible) |
+| Env vars | Standard `OTEL_*` + Claude-specific vars | Not supported |
 | JSON config file | No (env vars or MDM managed settings only) | `~/.config/opencode/otel.json` |
 | MDM / managed settings | macOS: `/Library/Application Support/ClaudeCode/managed-settings.json` | Not supported |
-| Config validation | Runtime checks | Valibot schema validation (JSON file + final merged config) |
+| Config validation | Runtime checks | Valibot schema validation |
 | Config path override | N/A | `OPENCODE_OTEL_CONFIG_PATH` env var |
 
-### 2.3 Shared env vars (fully compatible)
-
-These env vars work identically in both systems. You can set them once and use
-them for both Claude Code and OpenCode side by side.
-
-| Env var | Type | Default | Description |
-|---|---|---|---|
-| `OTEL_METRICS_EXPORTER` | `otlp\|console\|none` | `otlp` | Metrics exporter |
-| `OTEL_LOGS_EXPORTER` | `otlp\|console\|none` | `otlp` | Logs/events exporter |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc\|http/json\|http/protobuf` | `grpc` | Wire protocol |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | URL | `http://localhost:4317` | Collector URL |
-| `OTEL_EXPORTER_OTLP_HEADERS` | `key=value,...` | | Auth/custom headers |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | URL | | Per-signal endpoint override |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | URL | | Per-signal endpoint override |
-| `OTEL_METRIC_EXPORT_INTERVAL` | ms | `60000` | Metrics flush interval |
-| `OTEL_LOGS_EXPORT_INTERVAL` | ms | `5000` | Logs flush interval |
-| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `delta\|cumulative` | `delta` | Aggregation temporality |
-| `OTEL_RESOURCE_ATTRIBUTES` | `key=value,...` | | Custom resource attributes |
-| `OTEL_LOG_USER_PROMPTS` | bool | `false` | Include prompt text in events |
-| `OTEL_LOG_TOOL_DETAILS` | bool | `false` | Include tool names/args in events |
-| `OTEL_METRICS_INCLUDE_SESSION_ID` | bool | `true` | Add `session.id` to metrics |
-| `OTEL_METRICS_INCLUDE_VERSION` | bool | `false` | Add `app.version` to metrics |
-| `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` | bool | `true` | Add `user.account_uuid` to metrics |
-
-### 2.4 Claude Code-only env vars (not supported by opencode-otel)
-
-| Env var | Description | Why not supported |
-|---|---|---|
-| `CLAUDE_CODE_ENABLE_TELEMETRY` | Master toggle | Not needed (plugin presence = enabled) |
-| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | Per-signal protocol override | Not implemented yet |
-| `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | Per-signal protocol override | Not implemented yet |
-| `OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY` | mTLS client key path | Not implemented (use collector as mTLS proxy) |
-| `OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE` | mTLS client cert path | Not implemented |
-| `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | Dynamic header refresh interval | Not implemented |
-
-### 2.5 opencode-otel-only features
-
-| Feature | Description |
-|---|---|
-| JSON config file | `~/.config/opencode/otel.json` — structured config with schema validation |
-| `OPENCODE_OTEL_CONFIG_PATH` | Override config file location |
-| Valibot validation | Config errors surface clear messages with field paths |
-| Invalid env var resilience | Bad enum/number values silently fall back to defaults instead of crashing |
-
-### 2.6 JSON config file (opencode-otel only)
+### 2.3 JSON config file
 
 `~/.config/opencode/otel.json`:
 
@@ -153,9 +109,50 @@ them for both Claude Code and OpenCode side by side.
 }
 ```
 
-Resolution order: **env var > JSON file > built-in default**. For `headers` and
-`resourceAttributes`, values from both sources are merged (env var keys win on
-per-key conflicts).
+All fields are optional except `endpoint`. Without it, telemetry is disabled.
+
+### 2.4 Claude Code env vars (not supported by opencode-otel)
+
+The following Claude Code env vars have JSON config equivalents in opencode-otel:
+
+| Claude Code env var | opencode-otel JSON field |
+|---|---|
+| `OTEL_METRICS_EXPORTER` | `metricsExporter` |
+| `OTEL_LOGS_EXPORTER` | `logsExporter` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `protocol` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `endpoint` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `headers` |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `metricsEndpoint` |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `logsEndpoint` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `metricExportIntervalMs` |
+| `OTEL_LOGS_EXPORT_INTERVAL` | `logsExportIntervalMs` |
+| `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` | `metricsTemporality` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `resourceAttributes` |
+| `OTEL_LOG_USER_PROMPTS` | `logUserPrompts` |
+| `OTEL_LOG_TOOL_DETAILS` | `logToolDetails` |
+| `OTEL_METRICS_INCLUDE_SESSION_ID` | `includeSessionId` |
+| `OTEL_METRICS_INCLUDE_VERSION` | `includeVersion` |
+| `OTEL_METRICS_INCLUDE_ACCOUNT_UUID` | `includeAccountUuid` |
+
+The following Claude Code env vars have no equivalent in opencode-otel:
+
+| Env var | Description | Why not supported |
+|---|---|---|
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | Master toggle | Not needed (plugin presence = enabled) |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | Per-signal protocol override | Not implemented yet |
+| `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | Per-signal protocol override | Not implemented yet |
+| `OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY` | mTLS client key path | Not implemented (use collector as mTLS proxy) |
+| `OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE` | mTLS client cert path | Not implemented |
+| `CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS` | Dynamic header refresh interval | Not implemented |
+
+### 2.5 opencode-otel-only features
+
+| Feature | Description |
+|---|---|
+| JSON config file | `~/.config/opencode/otel.json` — structured config with schema validation |
+| `OPENCODE_OTEL_CONFIG_PATH` | Override config file location |
+| Valibot validation | Config errors surface clear messages with field paths |
+| Per-signal endpoints | `metricsEndpoint` and `logsEndpoint` as JSON fields |
 
 ---
 
@@ -200,12 +197,12 @@ events (not the Traces SDK).
 
 | Attribute | Claude Code | opencode-otel |
 |---|---|---|
-| `session.id` | Yes (controlled by `OTEL_METRICS_INCLUDE_SESSION_ID`) | Yes (same control) |
-| `app.version` | Yes (controlled by `OTEL_METRICS_INCLUDE_VERSION`) | Yes (same control) |
+| `session.id` | Yes (controlled by env var) | Yes (controlled by `includeSessionId` config) |
+| `app.version` | Yes (controlled by env var) | Yes (controlled by `includeVersion` config) |
 | `organization.id` | Yes | No (OpenCode has no org concept) |
-| `user.account_uuid` | Yes (controlled by `OTEL_METRICS_INCLUDE_ACCOUNT_UUID`) | No (OpenCode has no account UUID) |
+| `user.account_uuid` | Yes (controlled by env var) | No (OpenCode has no account UUID) |
 | `user.id` | Yes (anonymous device ID) | No |
-| `user.email` | Yes (OAuth only) | No (use `OTEL_RESOURCE_ATTRIBUTES` to add manually) |
+| `user.email` | Yes (OAuth only) | No (use `resourceAttributes` to add manually) |
 | `terminal.type` | Yes (e.g. `vscode`, `cursor`, `tmux`) | No |
 
 **Token usage attributes (`*.token.usage`):**
@@ -271,7 +268,7 @@ events (not the Traces SDK).
 | Attribute | Claude Code | opencode-otel |
 |---|---|---|
 | `prompt_length` | Character count | Character count |
-| `prompt` | Redacted unless `OTEL_LOG_USER_PROMPTS=true` | Same behavior, capped at 4096 chars |
+| `prompt` | Redacted unless env var enabled | Same behavior (controlled by `logUserPrompts` config), capped at 4096 chars |
 | `prompt.id` | UUID v4, shared across all events for one prompt cycle | Not available |
 | `agent` | Not present | Present (agent name, e.g. `coder`, `task`) |
 | `model.provider` | Not present | Present (provider ID) |
@@ -281,14 +278,14 @@ events (not the Traces SDK).
 
 | Attribute | Claude Code | opencode-otel |
 |---|---|---|
-| `tool_name` | Always present | Redacted unless `OTEL_LOG_TOOL_DETAILS=true` |
+| `tool_name` | Always present | Redacted unless `logToolDetails` config is `true` |
 | `duration_ms` | Exact | Exact (measured in plugin via before/after hooks) |
 | `success` | Boolean | Boolean (heuristic: checks if output contains "Error") |
 | `error` | Error message | Not present |
 | `decision_type` | Accept/reject type | Not present |
 | `decision_source` | Who made the decision | Not present |
-| `tool_result_size_bytes` | Size | Present (when `OTEL_LOG_TOOL_DETAILS=true`) |
-| `tool_parameters` | JSON with command, file path, etc. | `tool_args`: JSON of args (when `OTEL_LOG_TOOL_DETAILS=true`, capped at 2048 chars) |
+| `tool_result_size_bytes` | Size | Present (when `logToolDetails` is `true`) |
+| `tool_parameters` | JSON with command, file path, etc. | `tool_args`: JSON of args (when `logToolDetails` is `true`, capped at 2048 chars) |
 
 **`api_request` event:**
 
@@ -323,7 +320,7 @@ events (not the Traces SDK).
 | `os.version` | OS version string | Not present |
 | `host.arch` | `amd64\|arm64` | `arm64\|x64\|ia32` (Node.js `process.arch` values) |
 | `wsl.version` | WSL version (WSL only) | Not present |
-| Custom | From `OTEL_RESOURCE_ATTRIBUTES` | From `OTEL_RESOURCE_ATTRIBUTES` or JSON `resourceAttributes` |
+| Custom | From `OTEL_RESOURCE_ATTRIBUTES` env var | From `resourceAttributes` JSON config |
 
 ---
 
@@ -344,8 +341,8 @@ events (not the Traces SDK).
 
 | Control | Claude Code | opencode-otel |
 |---|---|---|
-| Prompt text redaction | `OTEL_LOG_USER_PROMPTS` (default: off) | Same env var, same default |
-| Tool name/args redaction | `OTEL_LOG_TOOL_DETAILS` (default: off) | Same env var, same default. Tool names show as `"redacted"` when off |
+| Prompt text redaction | `OTEL_LOG_USER_PROMPTS` env var (default: off) | `logUserPrompts` JSON config (default: off) |
+| Tool name/args redaction | `OTEL_LOG_TOOL_DETAILS` env var (default: off) | `logToolDetails` JSON config (default: off). Tool names show as `"redacted"` when off |
 | Prompt text cap | Not documented | 4096 characters |
 | Tool args cap | Not documented | 2048 characters |
 | MCP server names | Controlled by `OTEL_LOG_TOOL_DETAILS` | N/A (OpenCode doesn't expose MCP tool provenance in hooks) |
@@ -376,7 +373,7 @@ events (not the Traces SDK).
 |---|---|---|
 | Managed settings (MDM) | Yes — `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS) enforces config, prevents user override | No |
 | Server-managed settings | Yes — organization admins can push telemetry config | No |
-| Per-signal endpoint overrides | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Same env vars supported |
+| Per-signal endpoint overrides | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` env vars | `metricsEndpoint`, `logsEndpoint` JSON config fields |
 | Per-signal protocol overrides | `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`, `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | Not supported |
 | Reference monitoring stack | [claude-code-monitoring-guide](https://github.com/anthropics/claude-code-monitoring-guide) (Docker Compose: Collector + Prometheus + Grafana) | Not provided (compatible with the same stack) |
 
@@ -384,30 +381,46 @@ events (not the Traces SDK).
 
 ## 11. Migration Guide: Claude Code OTEL → opencode-otel
 
-### 11.1 If you use env vars only
+### 11.1 Converting env vars to JSON config
 
-Your existing config works **as-is**. The only change:
+Create `~/.config/opencode/otel.json` and translate your env vars:
 
-```diff
-- export CLAUDE_CODE_ENABLE_TELEMETRY=1
-+ # Not needed — plugin is enabled by being listed in opencode.json
+```bash
+# Before (Claude Code env vars):
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel.example.com"
+export OTEL_EXPORTER_OTLP_PROTOCOL="grpc"
+export OTEL_METRICS_EXPORTER="otlp"
+export OTEL_LOGS_EXPORTER="otlp"
+export OTEL_LOG_USER_PROMPTS="false"
+export OTEL_METRICS_INCLUDE_SESSION_ID="true"
+export OTEL_RESOURCE_ATTRIBUTES="user.email=dev@company.com"
 ```
 
-All other `OTEL_*` env vars are read identically.
+```json
+// After (~/.config/opencode/otel.json):
+{
+  "endpoint": "https://otel.example.com",
+  "protocol": "grpc",
+  "metricsExporter": "otlp",
+  "logsExporter": "otlp",
+  "logUserPrompts": false,
+  "includeSessionId": true,
+  "resourceAttributes": {
+    "user.email": "dev@company.com"
+  }
+}
+```
 
 ### 11.2 If you use managed settings (MDM)
 
 Managed settings are not supported. Convert the `env` block from your managed
-settings JSON into either:
-- Shell env vars (in `.bashrc`, `.zshrc`, etc.)
-- A `~/.config/opencode/otel.json` file
+settings JSON into a `~/.config/opencode/otel.json` file.
 
 ### 11.3 Dashboard adaptation
 
 **Option A: Use the `claude-code` telemetry profile (recommended)**
 
-Set `telemetryProfile: "claude-code"` in your JSON config or
-`OTEL_TELEMETRY_PROFILE=claude-code` as an env var. The plugin will emit
+Set `telemetryProfile: "claude-code"` in your JSON config. The plugin will emit
 telemetry with the exact same naming as Claude Code (`service.name: "claude-code"`,
 meter `com.anthropic.claude_code`, metric prefix `claude_code.*`, event prefix
 `claude_code.*`). No dashboard changes required.
@@ -432,8 +445,8 @@ Update any filters or grouping that use this field.
 
 ### 11.4 Running both side by side
 
-If you use both Claude Code and OpenCode, both can export to the same collector
-with the same env vars. They differentiate via:
+If you use both Claude Code and OpenCode, both can export to the same collector.
+They differentiate via:
 
 | | Claude Code | OpenCode (default) | OpenCode (`claude-code` profile) |
 |---|---|---|---|
