@@ -11,7 +11,7 @@
  *   - ~/.config/opencode/otel.json    (standard location)
  */
 
-import { readFileSync } from "fs"
+import { readFile } from "fs/promises"
 import { join } from "path"
 import { homedir } from "os"
 import * as v from "valibot"
@@ -193,7 +193,7 @@ export class ConfigValidationError extends Error {
 // JSON file loader
 // ---------------------------------------------------------------------------
 
-function loadJsonConfig(): OtelJsonConfig {
+async function loadJsonConfig(): Promise<OtelJsonConfig> {
   const envPath = process.env.OPENCODE_OTEL_CONFIG_PATH
 
   const candidates: string[] = []
@@ -205,7 +205,7 @@ function loadJsonConfig(): OtelJsonConfig {
   for (const filePath of candidates) {
     let raw: string
     try {
-      raw = readFileSync(filePath, "utf8")
+      raw = await readFile(filePath, "utf8")
     } catch {
       continue
     }
@@ -248,8 +248,8 @@ function loadEnvConfig(): EnvConfig {
  * Throws `ConfigValidationError` if the JSON file has invalid fields.
  * Throws `Error` if the final merged config is invalid (e.g. bad endpoint URL).
  */
-export function loadConfig(): OtelConfig | undefined {
-  const json = loadJsonConfig()
+export async function loadConfig(): Promise<OtelConfig | undefined> {
+  const json = await loadJsonConfig()
   const env = loadEnvConfig()
 
   const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT ?? json.endpoint

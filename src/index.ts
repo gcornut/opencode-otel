@@ -29,7 +29,7 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
 
   let config
   try {
-    config = loadConfig()
+    config = await loadConfig()
   } catch (e) {
     log.error("failed to load config", {
       error: e instanceof Error ? e.message : String(e),
