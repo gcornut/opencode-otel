@@ -29,6 +29,7 @@ import { SeverityNumber } from "@opentelemetry/api-logs"
 
 import type { OtelConfig, TelemetryProfile } from "./config.js"
 import type { Counter, Attributes, Meter } from "@opentelemetry/api"
+import type { Logger } from "./log.js"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,7 +191,7 @@ function buildLogsUrl(config: OtelConfig): string {
 
 const PLUGIN_VERSION = "0.1.0"
 
-export function initTelemetry(config: OtelConfig): TelemetryContext {
+export function initTelemetry(config: OtelConfig, log: Logger): TelemetryContext {
   const profile = PROFILES[config.telemetryProfile]
   const p = profile.prefix
   const resource = buildResource(config, PLUGIN_VERSION)
@@ -247,6 +248,7 @@ export function initTelemetry(config: OtelConfig): TelemetryContext {
   const logger = loggerProvider.getLogger(profile.meterName, PLUGIN_VERSION)
 
   function emitEvent(name: string, attrs: Attributes) {
+    log.debug("emitEvent", { name, attributes: attrs })
     logger.emit({
       severityNumber: SeverityNumber.INFO,
       severityText: "INFO",

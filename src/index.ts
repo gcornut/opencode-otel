@@ -14,13 +14,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { loadConfig } from "./config.js"
 import { initTelemetry } from "./telemetry.js"
 import { createLogger } from "./log.js"
-import {
-  createHookState,
-  handleEvent,
-  handleToolBefore,
-  handleToolAfter,
-  handleChatMessage,
-} from "./hooks.js"
+import { createHookState, handleEvent } from "./hooks.js"
 
 export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
   const log = createLogger(ctx.client)
@@ -60,7 +54,7 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
     endpoint: config.endpoint,
   })
 
-  const telemetry = initTelemetry(config)
+  const telemetry = initTelemetry(config, log)
   const state = createHookState(config, telemetry, log)
 
   // Log plugin startup as OTEL event
@@ -81,7 +75,36 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
     await telemetry.shutdown()
   })
 
+  /** Shared error handler for all hooks. */
+  function onError(hook: string, e: unknown, extra?: Record<string, unknown>) {
+    log.error(`error in ${hook} hook`, {
+      ...extra,
+      error: e instanceof Error ? e.message : String(e),
+    })
+  }
+
   return {
+    // -----------------------------------------------------------------------
+    // Command interceptor — handles /otel toggle command
+    // -----------------------------------------------------------------------
+    "command.execute.before": async (input, _output) => {
+      try {
+        const result = handleEvent(state, {
+          type: "command.execute.before",
+          properties: { command: input.command, arguments: input.arguments },
+        })
+        if (result?.otelToggled) {
+          const status = result.otelToggled.enabled ? "enabled" : "disabled"
+          const variant = result.otelToggled.enabled ? "success" : "warning"
+          await (ctx.client.tui as any).showToast({
+            body: { title: "OpenTelemetry", message: `Telemetry ${status}`, variant, duration: 3000 },
+          })
+        }
+      } catch (e) {
+        onError("command.execute.before", e, { command: input.command })
+      }
+    },
+
     // -----------------------------------------------------------------------
     // Global event listener — catches session lifecycle, file edits,
     // message parts (for token/cost tracking), and more.
@@ -90,10 +113,7 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
       try {
         handleEvent(state, event as { type: string; properties?: any })
       } catch (e) {
-        log.error("error in event hook", {
-          eventType: (event as any)?.type,
-          error: e instanceof Error ? e.message : String(e),
-        })
+        onError("event", e, { eventType: (event as any)?.type })
       }
     },
 
@@ -102,19 +122,17 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
     // -----------------------------------------------------------------------
     "chat.message": async (input, output) => {
       try {
-        handleChatMessage(
-          state,
-          {
+        handleEvent(state, {
+          type: "chat.message",
+          properties: {
             sessionID: input.sessionID,
             agent: input.agent,
             model: input.model,
+            parts: output.parts,
           },
-          output.parts as Array<{ type: string; text?: string }>,
-        )
-      } catch (e) {
-        log.error("error in chat.message hook", {
-          error: e instanceof Error ? e.message : String(e),
         })
+      } catch (e) {
+        onError("chat.message", e)
       }
     },
 
@@ -123,44 +141,36 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
     // -----------------------------------------------------------------------
     "tool.execute.before": async (input, output) => {
       try {
-        handleToolBefore(
-          state,
-          {
+        handleEvent(state, {
+          type: "tool.execute.before",
+          properties: {
             tool: input.tool,
             sessionID: input.sessionID,
             callID: input.callID,
+            args: output.args,
           },
-          output.args,
-        )
-      } catch (e) {
-        log.error("error in tool.execute.before hook", {
-          tool: input.tool,
-          error: e instanceof Error ? e.message : String(e),
         })
+      } catch (e) {
+        onError("tool.execute.before", e, { tool: input.tool })
       }
     },
 
     "tool.execute.after": async (input, output) => {
       try {
-        handleToolAfter(
-          state,
-          {
+        handleEvent(state, {
+          type: "tool.execute.after",
+          properties: {
             tool: input.tool,
             sessionID: input.sessionID,
             callID: input.callID,
             args: input.args,
-          },
-          {
             title: output.title,
             output: output.output,
             metadata: output.metadata,
           },
-        )
-      } catch (e) {
-        log.error("error in tool.execute.after hook", {
-          tool: input.tool,
-          error: e instanceof Error ? e.message : String(e),
         })
+      } catch (e) {
+        onError("tool.execute.after", e, { tool: input.tool })
       }
     },
   }

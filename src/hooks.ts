@@ -1,5 +1,10 @@
 /**
  * Plugin hooks — wires OpenCode events to OTEL metrics and log events.
+ *
+ * All hook types (server events, tool execution, chat messages, commands)
+ * are unified through a single `handleEvent` dispatcher. Each hook in
+ * index.ts packages its input into a `{ type, properties }` event and
+ * delegates here.
  */
 
 import type { Attributes } from "@opentelemetry/api"
@@ -30,6 +35,8 @@ export interface HookState {
   sessions: Map<string, SessionState>
   pendingToolCalls: Map<string, ToolCallState> // keyed by callID
   eventSequence: number
+  /** Runtime toggle — when false, telemetry emission is skipped. */
+  enabled: boolean
 }
 
 export function createHookState(config: OtelConfig, telemetry: TelemetryContext, log: Logger): HookState {
@@ -40,6 +47,7 @@ export function createHookState(config: OtelConfig, telemetry: TelemetryContext,
     sessions: new Map(),
     pendingToolCalls: new Map(),
     eventSequence: 0,
+    enabled: true,
   }
 }
 
@@ -68,10 +76,51 @@ function eventAttributes(state: HookState, sessionId?: string): Attributes {
 }
 
 // ---------------------------------------------------------------------------
-// Event handler
+// /otel command name
 // ---------------------------------------------------------------------------
 
-export function handleEvent(state: HookState, event: { type: string; properties?: any }) {
+/** Name of the slash command this plugin intercepts. */
+export const OTEL_COMMAND_NAME = "otel"
+
+// ---------------------------------------------------------------------------
+// Unified event handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Result returned by `handleEvent` for events that need the caller to
+ * perform side-effects (e.g. show a toast).
+ */
+export interface HandleEventResult {
+  /** Present when the /otel toggle command was handled. */
+  otelToggled?: { enabled: boolean }
+}
+
+/**
+ * Central dispatcher — every hook type is routed here as a
+ * `{ type, properties }` event.
+ *
+ * Synthetic event types used by index.ts:
+ *   - "command.execute.before" — slash command interception
+ *   - "tool.execute.before"   — tool call start
+ *   - "tool.execute.after"    — tool call end
+ *   - "chat.message"          — user prompt
+ *
+ * Server-pushed event types (forwarded as-is):
+ *   - "session.created", "session.idle", "session.status"
+ *   - "file.edited", "message.part.updated", …
+ */
+export function handleEvent(
+  state: HookState,
+  event: { type: string; properties?: any },
+): HandleEventResult | undefined {
+  // --- Command interception (always processed, even when disabled) ---
+  if (event.type === "command.execute.before") {
+    return handleCommandBefore(state, event.properties)
+  }
+
+  // --- Skip everything else when telemetry is disabled ---
+  if (!state.enabled) return
+
   const { telemetry } = state
   const props = event.properties ?? {}
 
@@ -139,9 +188,7 @@ export function handleEvent(state: HookState, event: { type: string; properties?
     // --- Message parts (token/cost tracking) ---
     case "message.part.updated": {
       const part = props.part ?? props
-      // The part may contain token usage and cost info when it's an assistant response
       if (part.type === "step-start" || part.type === "step-finish") {
-        // Token usage from provider metadata
         const usage = part.usage ?? part.metadata?.usage
         if (usage) {
           const sessionId = part.sessionID ?? props.sessionID
@@ -178,7 +225,6 @@ export function handleEvent(state: HookState, event: { type: string; properties?
             })
           }
 
-          // Cost
           const cost = part.cost ?? part.metadata?.cost ?? usage.cost
           if (cost !== undefined && cost !== null) {
             telemetry.metrics.costUsage.add(typeof cost === "number" ? cost : 0, {
@@ -187,7 +233,6 @@ export function handleEvent(state: HookState, event: { type: string; properties?
             })
           }
 
-          // Emit API request event
           telemetry.emitEvent(`${telemetry.prefix}.api_request`, {
             ...eventAttributes(state, sessionId),
             model,
@@ -207,6 +252,103 @@ export function handleEvent(state: HookState, event: { type: string; properties?
       break
     }
 
+    // --- Tool execution (before) ---
+    case "tool.execute.before": {
+      const { tool, sessionID, callID, args } = props
+      state.pendingToolCalls.set(callID, {
+        tool,
+        startedAt: Date.now(),
+        args,
+      })
+      telemetry.metrics.toolDecision.add(1, {
+        ...baseAttributes(state, sessionID),
+        tool_name: tool,
+        decision: "execute",
+      })
+      break
+    }
+
+    // --- Tool execution (after) ---
+    case "tool.execute.after": {
+      const { tool, sessionID, callID, args, title, output, metadata } = props
+      const pending = state.pendingToolCalls.get(callID)
+      const durationMs = pending ? Date.now() - pending.startedAt : 0
+      state.pendingToolCalls.delete(callID)
+
+      // Detect git operations for commit/PR metrics
+      if (tool === "bash") {
+        const cmd = typeof args === "object" && args !== null
+          ? (args as Record<string, unknown>).command
+          : undefined
+        if (typeof cmd === "string") {
+          if (/\bgit\s+commit\b/.test(cmd)) {
+            telemetry.metrics.commitCount.add(1, baseAttributes(state, sessionID))
+          }
+          if (/\bgh\s+pr\s+create\b/.test(cmd) || /\bgit\s+push\b.*--.*pull-request/.test(cmd)) {
+            telemetry.metrics.pullRequestCount.add(1, baseAttributes(state, sessionID))
+          }
+        }
+      }
+
+      // Detect file edits from write/edit tools
+      if (tool === "write" || tool === "edit") {
+        const outStr = typeof output === "string" ? output : ""
+        const lines = outStr.split("\n").length
+        if (lines > 0) {
+          telemetry.metrics.linesOfCode.add(lines, {
+            ...baseAttributes(state, sessionID),
+            type: tool === "write" ? "added" : "modified",
+          })
+        }
+      }
+
+      // Emit tool_result event
+      const eventAttrs: Attributes = {
+        ...eventAttributes(state, sessionID),
+        "tool_name": state.config.logToolDetails ? tool : "redacted",
+        "duration_ms": durationMs,
+        "success": !output?.includes("Error"),
+      }
+      if (state.config.logToolDetails) {
+        eventAttrs["tool_args"] = JSON.stringify(args).slice(0, 2048)
+        eventAttrs["tool_result_size_bytes"] =
+          typeof output === "string" ? output.length : 0
+      }
+
+      telemetry.emitEvent(`${telemetry.prefix}.tool_result`, eventAttrs)
+      state.log.debug("tool_result emitted", { tool, durationMs })
+      break
+    }
+
+    // --- Chat message (user prompt) ---
+    case "chat.message": {
+      const { sessionID, agent, model, parts } = props
+      const promptText = (parts as Array<{ type: string; text?: string }>)
+        .filter((p) => p.type === "text" && p.text)
+        .map((p) => p.text!)
+        .join("\n")
+
+      const attrs: Attributes = {
+        ...eventAttributes(state, sessionID),
+        "prompt_length": promptText.length,
+      }
+      if (agent) attrs["agent"] = agent
+      if (model) {
+        attrs["model.provider"] = model.providerID
+        attrs["model.id"] = model.modelID
+      }
+      if (state.config.logUserPrompts) {
+        attrs["prompt"] = promptText.slice(0, 4096)
+      }
+
+      telemetry.emitEvent(`${telemetry.prefix}.user_prompt`, attrs)
+      state.log.debug("user_prompt emitted", {
+        promptLength: promptText.length,
+        agent,
+      })
+      break
+    }
+
     default:
       // Unhandled event types are silently ignored
       break
@@ -214,128 +356,31 @@ export function handleEvent(state: HookState, event: { type: string; properties?
 }
 
 // ---------------------------------------------------------------------------
-// Tool execution hooks
+// Command handler (internal)
 // ---------------------------------------------------------------------------
 
-export function handleToolBefore(
+function handleCommandBefore(
   state: HookState,
-  input: { tool: string; sessionID: string; callID: string },
-  args: unknown,
-) {
-  state.pendingToolCalls.set(input.callID, {
-    tool: input.tool,
-    startedAt: Date.now(),
-    args,
+  props: { command: string; arguments: string },
+): HandleEventResult | undefined {
+  if (props.command !== OTEL_COMMAND_NAME) return
+
+  const arg = props.arguments.trim().toLowerCase()
+
+  if (arg === "on") {
+    state.enabled = true
+  } else if (arg === "off") {
+    state.enabled = false
+  } else {
+    // No argument or unknown argument → toggle
+    state.enabled = !state.enabled
+  }
+
+  const status = state.enabled ? "enabled" : "disabled"
+  state.log.info(`telemetry ${status} via /otel command`)
+  state.telemetry.emitEvent(`${state.telemetry.prefix}.telemetry.toggled`, {
+    "telemetry.enabled": state.enabled,
   })
 
-  // Emit tool decision metric
-  telemetry(state).metrics.toolDecision.add(1, {
-    ...baseAttributes(state, input.sessionID),
-    tool_name: input.tool,
-    decision: "execute",
-  })
-}
-
-export function handleToolAfter(
-  state: HookState,
-  input: { tool: string; sessionID: string; callID: string; args: unknown },
-  output: { title: string; output: string; metadata: unknown },
-) {
-  const pending = state.pendingToolCalls.get(input.callID)
-  const durationMs = pending ? Date.now() - pending.startedAt : 0
-  state.pendingToolCalls.delete(input.callID)
-
-  // Detect git operations for commit/PR metrics
-  if (input.tool === "bash") {
-    const cmd = typeof input.args === "object" && input.args !== null
-      ? (input.args as Record<string, unknown>).command
-      : undefined
-    if (typeof cmd === "string") {
-      if (/\bgit\s+commit\b/.test(cmd)) {
-        state.telemetry.metrics.commitCount.add(1, baseAttributes(state, input.sessionID))
-      }
-      if (/\bgh\s+pr\s+create\b/.test(cmd) || /\bgit\s+push\b.*--.*pull-request/.test(cmd)) {
-        state.telemetry.metrics.pullRequestCount.add(1, baseAttributes(state, input.sessionID))
-      }
-    }
-  }
-
-  // Detect file edits from write/edit tools
-  if (input.tool === "write" || input.tool === "edit") {
-    // Count lines from the output heuristic
-    const outStr = typeof output.output === "string" ? output.output : ""
-    const lines = outStr.split("\n").length
-    if (lines > 0) {
-      state.telemetry.metrics.linesOfCode.add(lines, {
-        ...baseAttributes(state, input.sessionID),
-        type: input.tool === "write" ? "added" : "modified",
-      })
-    }
-  }
-
-  // Emit tool_result event
-  const eventAttrs: Attributes = {
-    ...eventAttributes(state, input.sessionID),
-    "tool_name": state.config.logToolDetails ? input.tool : "redacted",
-    "duration_ms": durationMs,
-    "success": !output.output?.includes("Error"),
-  }
-
-  if (state.config.logToolDetails) {
-    eventAttrs["tool_args"] = JSON.stringify(input.args).slice(0, 2048)
-    eventAttrs["tool_result_size_bytes"] =
-      typeof output.output === "string" ? output.output.length : 0
-  }
-
-  state.telemetry.emitEvent(`${state.telemetry.prefix}.tool_result`, eventAttrs)
-  state.log.debug("tool_result emitted", {
-    tool: input.tool,
-    durationMs,
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Chat message hook (user prompt tracking)
-// ---------------------------------------------------------------------------
-
-export function handleChatMessage(
-  state: HookState,
-  input: { sessionID: string; agent?: string; model?: { providerID: string; modelID: string } },
-  parts: Array<{ type: string; text?: string }>,
-) {
-  const promptText = parts
-    .filter((p) => p.type === "text" && p.text)
-    .map((p) => p.text!)
-    .join("\n")
-
-  const attrs: Attributes = {
-    ...eventAttributes(state, input.sessionID),
-    "prompt_length": promptText.length,
-  }
-
-  if (input.agent) {
-    attrs["agent"] = input.agent
-  }
-  if (input.model) {
-    attrs["model.provider"] = input.model.providerID
-    attrs["model.id"] = input.model.modelID
-  }
-
-  if (state.config.logUserPrompts) {
-    attrs["prompt"] = promptText.slice(0, 4096) // cap at 4KB
-  }
-
-  state.telemetry.emitEvent(`${state.telemetry.prefix}.user_prompt`, attrs)
-  state.log.debug("user_prompt emitted", {
-    promptLength: promptText.length,
-    agent: input.agent,
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-function telemetry(state: HookState): TelemetryContext {
-  return state.telemetry
+  return { otelToggled: { enabled: state.enabled } }
 }
