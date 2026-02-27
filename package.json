@@ -14,13 +14,14 @@
   "files": ["dist", "README.md"],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/index.ts --outdir dist --target bun --format esm && tsc --emitDeclarationOnly",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm && tsc --emitDeclarationOnly",
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",
     "test": "bun test",
     "otel:collect": "bun scripts/otel-collector.ts",
     "otel:compare": "bun scripts/otel-compare.ts",
-    "lint": "bunx biome check src/"
+    "lint": "bunx biome check src/",
+    "install-local": "bun run build && mkdir -p ~/.config/opencode/plugins && ln -sf \"$(pwd)/dist/index.js\" ~/.config/opencode/plugins/opencode-otel.js"
   },
   "keywords": [
     "opencode",
