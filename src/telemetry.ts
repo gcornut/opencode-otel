@@ -34,6 +34,9 @@ import type { PushMetricExporter } from "@opentelemetry/sdk-metrics"
 import type { LogRecordExporter } from "@opentelemetry/sdk-logs"
 import type { Logger } from "./log.js"
 
+// Read version from package.json at build time via Bun's JSON import
+import packageJson from "../package.json"
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -56,7 +59,11 @@ export interface TelemetryContext {
   meterProvider: MeterProvider
   /** Metric/event name prefix — "opencode" or "claude_code" */
   prefix: string
+  /** The telemetry profile in use. */
+  profile: TelemetryProfile
   emitEvent: (prefixedName: string, unprefixedName: string, attrs: Attributes) => void
+  /** Force-flush all pending metrics and logs. */
+  flush: () => Promise<void>
   shutdown: () => Promise<void>
 }
 
@@ -142,8 +149,9 @@ function createMetricReader(config: OtelConfig): MetricReader | null {
   const exporterOpts = {
     url: buildMetricsUrl(config),
     headers: config.headers,
+    // AggregationTemporalityPreference: DELTA=0, CUMULATIVE=1, LOWMEMORY=2
     temporalityPreference:
-      config.metricsTemporality === "cumulative" ? 0 : 1, // 0=CUMULATIVE, 1=DELTA
+      config.metricsTemporality === "delta" ? 0 : 1,
   }
 
   const exporter =
@@ -196,7 +204,7 @@ function buildLogsUrl(config: OtelConfig): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-const PLUGIN_VERSION = "0.1.0"
+const PLUGIN_VERSION = packageJson.version
 
 /**
  * Optional overrides for dependency injection (used by tests).
@@ -219,8 +227,15 @@ export function initTelemetry(
   const p = profile.prefix
   const resource = buildResource(config, PLUGIN_VERSION)
 
+  const isClaudeProfile = config.telemetryProfile === "claude-code"
+
   // --- Metrics ---
-  const meterProvider = new MeterProvider({ resource })
+  // Suppress auto-injected telemetry.sdk.* resource attributes when using
+  // the claude-code profile (Claude Code's Go SDK doesn't include them).
+  const meterProvider = new MeterProvider({
+    resource,
+    mergeResourceWithDefaults: !isClaudeProfile,
+  })
   if (options?.metricExporter) {
     // Test mode: use the injected exporter
     meterProvider.addMetricReader(
@@ -268,7 +283,10 @@ export function initTelemetry(
   }
 
   // --- Logs (Events) ---
-  const loggerProvider = new LoggerProvider({ resource })
+  const loggerProvider = new LoggerProvider({
+    resource,
+    mergeResourceWithDefaults: !isClaudeProfile,
+  })
   if (options?.logExporter) {
     // Test mode: use the injected exporter with SimpleLogRecordProcessor
     // for immediate (synchronous) export
@@ -294,15 +312,26 @@ export function initTelemetry(
    */
   function emitEvent(prefixedName: string, unprefixedName: string, attrs: Attributes) {
     log.debug("emitEvent", { name: prefixedName, attributes: attrs })
+    // Claude Code's log records have no severityNumber/severityText;
+    // only add them for the opencode profile.
     logger.emit({
-      severityNumber: SeverityNumber.INFO,
-      severityText: "INFO",
+      ...(isClaudeProfile ? {} : {
+        severityNumber: SeverityNumber.INFO,
+        severityText: "INFO",
+      }),
       body: prefixedName,
       attributes: {
         "event.name": unprefixedName,
         ...attrs,
       },
     })
+  }
+
+  async function flush() {
+    await Promise.allSettled([
+      meterProvider.forceFlush(),
+      loggerProvider.forceFlush(),
+    ])
   }
 
   async function shutdown() {
@@ -320,7 +349,9 @@ export function initTelemetry(
     loggerProvider,
     meterProvider,
     prefix: p,
+    profile: config.telemetryProfile,
     emitEvent,
+    flush,
     shutdown,
   }
 }

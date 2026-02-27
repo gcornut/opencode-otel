@@ -57,23 +57,29 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
   const telemetry = initTelemetry(config, log)
   const state = createHookState(config, telemetry, log)
 
-  // Log plugin startup as OTEL event
-  telemetry.emitEvent(`${telemetry.prefix}.plugin.started`, "plugin.started", {
-    "plugin.name": "opencode-otel",
-    "plugin.version": "0.2.0",
-    "otel.metrics_exporter": config.metricsExporter,
-    "otel.logs_exporter": config.logsExporter,
-    "otel.protocol": config.protocol,
-    "otel.endpoint": config.endpoint,
-  })
+  // Log plugin startup as OTEL event (Claude Code doesn't emit this,
+  // so skip in claude-code profile to avoid extra events / sequence numbers).
+  if (config.telemetryProfile !== "claude-code") {
+    telemetry.emitEvent(`${telemetry.prefix}.plugin.started`, "plugin.started", {
+      "plugin.name": "opencode-otel",
+      "plugin.version": "0.2.0",
+      "otel.metrics_exporter": config.metricsExporter,
+      "otel.logs_exporter": config.logsExporter,
+      "otel.protocol": config.protocol,
+      "otel.endpoint": config.endpoint,
+    })
+  }
 
   log.info("plugin started, hooks registered")
 
-  // Register shutdown handler for clean teardown
-  process.on("beforeExit", async () => {
+  // Register shutdown handlers for clean teardown
+  const doShutdown = async () => {
     log.info("shutting down telemetry")
     await telemetry.shutdown()
-  })
+  }
+  process.on("beforeExit", doShutdown)
+  process.on("SIGINT", doShutdown)
+  process.on("SIGTERM", doShutdown)
 
   /** Shared error handler for all hooks. */
   function onError(hook: string, e: unknown, extra?: Record<string, unknown>) {
@@ -112,6 +118,17 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
     event: async ({ event }) => {
       try {
         handleEvent(state, event as { type: string; properties?: any })
+        // Force flush on session lifecycle events and message completion
+        // to ensure data is exported before the process exits
+        // (important for `opencode run` which exits quickly)
+        const eventType = (event as any)?.type
+        if (
+          eventType === "session.idle" ||
+          eventType === "session.delete" ||
+          eventType === "message.updated"
+        ) {
+          await telemetry.flush()
+        }
       } catch (e) {
         onError("event", e, { eventType: (event as any)?.type })
       }
@@ -131,6 +148,8 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
             parts: output.parts,
           },
         })
+        // Flush after user prompt to ensure data is exported before short sessions exit
+        await telemetry.flush()
       } catch (e) {
         onError("chat.message", e)
       }

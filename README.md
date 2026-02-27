@@ -63,14 +63,14 @@ You can override the config file path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/o
 | `metricsTemporality` | string | `"delta"` | `"delta"` or `"cumulative"` |
 | `logUserPrompts` | boolean | `false` | Include prompt text in log events |
 | `logToolDetails` | boolean | `false` | Include tool names and args in log events |
-| `includeSessionId` | boolean | `true` | Include `session.id` on metrics |
-| `includeVersion` | boolean | `false` | Include `app.version` on metrics |
+| `includeSessionId` | boolean | `true` | Include `session.id` on metrics and events |
+| `includeVersion` | boolean | `false` | Include `app.version` on metrics and events |
 | `includeAccountUuid` | boolean | `true` | Include `user.account_uuid` on metrics |
 | `telemetryProfile` | string | `"opencode"` | `"opencode"` or `"claude-code"` — emit events using Claude Code's naming |
 
 ### Telemetry profile
 
-When set to `"claude-code"`, the plugin emits telemetry that is **indistinguishable** from Claude Code's built-in telemetry: same `service.name` (`claude-code`), same meter name (`com.anthropic.claude_code`), same metric names (`claude_code.*`), and same event names (`claude_code.*`). This lets you reuse Claude Code dashboards and alerting rules without any modification.
+When set to `"claude-code"`, the plugin emits telemetry that closely matches Claude Code's built-in telemetry: same `service.name` (`claude-code`), same meter name (`com.anthropic.claude_code`), same logger name (`com.anthropic.claude_code.events`), same metric names (`claude_code.*`), and same event body format (`claude_code.*`). This lets you reuse Claude Code dashboards and alerting rules without modification.
 
 ### Example: minimal config
 
@@ -102,76 +102,15 @@ To disable telemetry without removing the plugin, set both exporters to `"none"`
 }
 ```
 
-## Exported Metrics
+## Telemetry signals
 
-All metrics use the meter name `com.opencode.telemetry` (or `com.anthropic.claude_code` with `telemetryProfile: "claude-code"`).
+**8 metrics** (counters): `session.count`, `active_time.total`, `token.usage`, `cost.usage`, `lines_of_code.count`, `commit.count`, `pull_request.count`, `tool.decision`
 
-The table below shows the default `opencode` profile. With `telemetryProfile: "claude-code"`, the prefix becomes `claude_code` (e.g. `claude_code.session.count`).
+**3 events** (OTEL Log records): `user_prompt`, `tool_result`, `api_request`
 
-| Metric | Unit | Attributes |
-|---|---|---|
-| `opencode.session.count` | count | `session.id` |
-| `opencode.active_time.total` | seconds | `session.id` |
-| `opencode.token.usage` | tokens | `type` (input/output/cacheRead/cacheCreation), `model` |
-| `opencode.cost.usage` | USD | `model` |
-| `opencode.lines_of_code.count` | count | `type` (added/removed/modified) |
-| `opencode.commit.count` | count | `session.id` |
-| `opencode.pull_request.count` | count | `session.id` |
-| `opencode.tool.decision` | count | `tool_name`, `decision` |
+All signals include `user.id`, `session.id`, and `terminal.type` attributes. Events also include `event.timestamp` (ISO 8601), `event.sequence`, and `prompt.id`.
 
-## Exported Events (via Logs)
-
-Events are emitted as OTEL Log records with `event.name`. With `telemetryProfile: "claude-code"`, the prefix becomes `claude_code` (e.g. `claude_code.user_prompt`).
-
-| Event | Key Attributes |
-|---|---|
-| `opencode.user_prompt` | `prompt_length`, `agent`, `model.provider`, `model.id`, `prompt` (if enabled) |
-| `opencode.tool_result` | `tool_name`, `duration_ms`, `success`, `tool_args`, `tool_result_size_bytes` |
-| `opencode.api_request` | `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cost_usd` |
-| `opencode.session.created` | `session.id`, `session.title` |
-| `opencode.plugin.started` | `plugin.name`, `otel.endpoint`, `otel.protocol` |
-
-## Resource Attributes
-
-All telemetry includes:
-
-| Attribute | `opencode` profile | `claude-code` profile |
-|---|---|---|
-| `service.name` | `opencode` | `claude-code` |
-| `service.version` | Plugin version | Plugin version |
-| `os.type` | `darwin`, `linux`, `win32` | `darwin`, `linux`, `win32` |
-| `host.arch` | `arm64`, `x64`, etc. | `arm64`, `amd64`, etc. (Go-style) |
-| *(custom)* | From `resourceAttributes` config | From `resourceAttributes` config |
-
-## Differences from Claude Code
-
-| Feature | Claude Code | opencode-otel |
-|---|---|---|
-| Master toggle | `CLAUDE_CODE_ENABLE_TELEMETRY=1` | Always on (set exporters to `none` to disable) |
-| Configuration | Env vars (`OTEL_*`) | JSON file (`~/.config/opencode/otel.json`) |
-| Impersonation | N/A | `telemetryProfile: "claude-code"` emits identical naming |
-| Prometheus exporter | Supported | Not yet (use OTLP -> Prometheus remote write) |
-| Traces | Not supported | Not supported |
-| Token/cost tracking | Direct from API | Best-effort from message part events |
-| `otelHeadersHelper` | Supported (script for dynamic headers) | Not yet |
-| mTLS | Supported | Not yet (use OTEL collector as proxy) |
-
-## Architecture
-
-```
-OpenCode
-  |
-  +-- opencode-otel plugin
-        |
-        +-- event hook -----> session/file/message events ---> OTEL Metrics + Logs
-        +-- chat.message ---> user prompt events ------------> OTEL Logs
-        +-- tool.execute.* -> tool timing/result events -----> OTEL Metrics + Logs
-        |
-        +-- MeterProvider (PeriodicExportingMetricReader)
-        +-- LoggerProvider (BatchLogRecordProcessor)
-        |
-        +-- OTLP gRPC/HTTP Exporter --> your OTEL Collector
-```
+With `telemetryProfile: "claude-code"`, metric names use the `claude_code.*` prefix and the wire format closely matches Claude Code's built-in telemetry. See [docs/claude-code-vs-opencode-otel.md](docs/claude-code-vs-opencode-otel.md) for a detailed comparison.
 
 ## Development
 
@@ -179,6 +118,18 @@ OpenCode
 bun install
 bun run typecheck
 bun run build
+bun test
+```
+
+### Local testing with collector
+
+```bash
+# Start the built-in OTLP collector
+bun run otel:collect -o telemetry.jsonl
+
+# In another terminal, run opencode or claude with telemetry pointed at localhost:4318
+# Then compare captures:
+bun run otel:compare claude.jsonl opencode.jsonl
 ```
 
 ## License
