@@ -17,6 +17,9 @@
     "build": "bun build src/index.ts --outdir dist --target bun --format esm && tsc --emitDeclarationOnly",
     "clean": "rm -rf dist",
     "prepublishOnly": "bun run clean && bun run build",
+    "test": "bun test",
+    "otel:collect": "bun scripts/otel-collector.ts",
+    "otel:compare": "bun scripts/otel-compare.ts",
     "lint": "bunx biome check src/"
   },
   "keywords": [

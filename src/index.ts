@@ -58,9 +58,9 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
   const state = createHookState(config, telemetry, log)
 
   // Log plugin startup as OTEL event
-  telemetry.emitEvent(`${telemetry.prefix}.plugin.started`, {
+  telemetry.emitEvent(`${telemetry.prefix}.plugin.started`, "plugin.started", {
     "plugin.name": "opencode-otel",
-    "plugin.version": "0.1.0",
+    "plugin.version": "0.2.0",
     "otel.metrics_exporter": config.metricsExporter,
     "otel.logs_exporter": config.logsExporter,
     "otel.protocol": config.protocol,

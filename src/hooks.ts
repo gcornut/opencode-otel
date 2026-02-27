@@ -7,10 +7,12 @@
  * delegates here.
  */
 
+import { randomUUID } from "crypto"
 import type { Attributes } from "@opentelemetry/api"
 import type { OtelConfig } from "./config.js"
 import type { TelemetryContext } from "./telemetry.js"
 import type { Logger } from "./log.js"
+import { detectTerminal, getUserId } from "./runtime.js"
 
 // ---------------------------------------------------------------------------
 // State tracking
@@ -37,6 +39,12 @@ export interface HookState {
   eventSequence: number
   /** Runtime toggle — when false, telemetry emission is skipped. */
   enabled: boolean
+  /** Persistent anonymous user ID (64-char hex, matches Claude Code format). */
+  userId: string
+  /** Detected terminal type (e.g. "vscode", "zed", "tmux"). */
+  terminalType: string | undefined
+  /** Current prompt ID (randomUUID, set per user prompt). */
+  promptId: string | undefined
 }
 
 export function createHookState(config: OtelConfig, telemetry: TelemetryContext, log: Logger): HookState {
@@ -48,6 +56,9 @@ export function createHookState(config: OtelConfig, telemetry: TelemetryContext,
     pendingToolCalls: new Map(),
     eventSequence: 0,
     enabled: true,
+    userId: getUserId(),
+    terminalType: detectTerminal(),
+    promptId: undefined,
   }
 }
 
@@ -55,10 +66,19 @@ export function createHookState(config: OtelConfig, telemetry: TelemetryContext,
 // Attribute helpers
 // ---------------------------------------------------------------------------
 
-function baseAttributes(state: HookState, sessionId?: string): Attributes {
-  const attrs: Attributes = {}
+/**
+ * Common attributes added to every metric data point and log event.
+ * Mirrors Claude Code's `AG6()` function.
+ */
+function commonAttributes(state: HookState, sessionId?: string): Attributes {
+  const attrs: Attributes = {
+    "user.id": state.userId,
+  }
   if (sessionId && state.config.includeSessionId) {
     attrs["session.id"] = sessionId
+  }
+  if (state.terminalType) {
+    attrs["terminal.type"] = state.terminalType
   }
   if (state.config.includeVersion) {
     attrs["app.version"] = "0.1.0"
@@ -68,11 +88,15 @@ function baseAttributes(state: HookState, sessionId?: string): Attributes {
 
 function eventAttributes(state: HookState, sessionId?: string): Attributes {
   state.eventSequence++
-  return {
-    ...baseAttributes(state, sessionId),
-    "event.timestamp": Date.now(),
+  const attrs: Attributes = {
+    ...commonAttributes(state, sessionId),
+    "event.timestamp": new Date().toISOString(),
     "event.sequence": state.eventSequence,
   }
+  if (state.promptId) {
+    attrs["prompt.id"] = state.promptId
+  }
+  return attrs
 }
 
 // ---------------------------------------------------------------------------
@@ -134,8 +158,8 @@ export function handleEvent(
           startedAt: Date.now(),
           lastActivityAt: Date.now(),
         })
-        telemetry.metrics.sessionCount.add(1, baseAttributes(state, sessionId))
-        telemetry.emitEvent(`${telemetry.prefix}.session.created`, {
+        telemetry.metrics.sessionCount.add(1, commonAttributes(state, sessionId))
+        telemetry.emitEvent(`${telemetry.prefix}.session.created`, "session.created", {
           ...eventAttributes(state, sessionId),
           "session.title": props.info?.title ?? "",
         })
@@ -150,7 +174,7 @@ export function handleEvent(
       if (session) {
         const activeSeconds = (Date.now() - session.lastActivityAt) / 1000
         telemetry.metrics.activeTime.add(activeSeconds, {
-          ...baseAttributes(state, sessionId),
+          ...commonAttributes(state, sessionId),
         })
         session.lastActivityAt = Date.now()
       }
@@ -172,13 +196,13 @@ export function handleEvent(
       const removed = props.linesRemoved ?? props.removed ?? 0
       if (added > 0) {
         telemetry.metrics.linesOfCode.add(added, {
-          ...baseAttributes(state),
+          ...commonAttributes(state),
           type: "added",
         })
       }
       if (removed > 0) {
         telemetry.metrics.linesOfCode.add(removed, {
-          ...baseAttributes(state),
+          ...commonAttributes(state),
           type: "removed",
         })
       }
@@ -195,7 +219,7 @@ export function handleEvent(
           const model = part.model ?? part.metadata?.model ?? "unknown"
           if (usage.promptTokens || usage.inputTokens) {
             telemetry.metrics.tokenUsage.add(usage.promptTokens ?? usage.inputTokens ?? 0, {
-              ...baseAttributes(state, sessionId),
+              ...commonAttributes(state, sessionId),
               type: "input",
               model,
             })
@@ -204,7 +228,7 @@ export function handleEvent(
             telemetry.metrics.tokenUsage.add(
               usage.completionTokens ?? usage.outputTokens ?? 0,
               {
-                ...baseAttributes(state, sessionId),
+                ...commonAttributes(state, sessionId),
                 type: "output",
                 model,
               },
@@ -212,14 +236,14 @@ export function handleEvent(
           }
           if (usage.cacheReadTokens) {
             telemetry.metrics.tokenUsage.add(usage.cacheReadTokens, {
-              ...baseAttributes(state, sessionId),
+              ...commonAttributes(state, sessionId),
               type: "cacheRead",
               model,
             })
           }
           if (usage.cacheCreationTokens) {
             telemetry.metrics.tokenUsage.add(usage.cacheCreationTokens, {
-              ...baseAttributes(state, sessionId),
+              ...commonAttributes(state, sessionId),
               type: "cacheCreation",
               model,
             })
@@ -228,12 +252,17 @@ export function handleEvent(
           const cost = part.cost ?? part.metadata?.cost ?? usage.cost
           if (cost !== undefined && cost !== null) {
             telemetry.metrics.costUsage.add(typeof cost === "number" ? cost : 0, {
-              ...baseAttributes(state, sessionId),
+              ...commonAttributes(state, sessionId),
               model,
             })
           }
 
-          telemetry.emitEvent(`${telemetry.prefix}.api_request`, {
+          // Determine request speed — Claude Code uses "fast" vs "normal" based on model
+          const duration = part.duration ?? part.metadata?.duration
+          const durationMs = typeof duration === "number" ? duration : 0
+          const speed = part.speed ?? part.metadata?.speed ?? "normal"
+
+          telemetry.emitEvent(`${telemetry.prefix}.api_request`, "api_request", {
             ...eventAttributes(state, sessionId),
             model,
             "input_tokens": usage.promptTokens ?? usage.inputTokens ?? 0,
@@ -241,6 +270,8 @@ export function handleEvent(
             "cache_read_tokens": usage.cacheReadTokens ?? 0,
             "cache_creation_tokens": usage.cacheCreationTokens ?? 0,
             "cost_usd": typeof cost === "number" ? cost : 0,
+            "duration_ms": durationMs,
+            "speed": speed,
           })
           state.log.debug("api_request emitted", {
             model,
@@ -261,7 +292,7 @@ export function handleEvent(
         args,
       })
       telemetry.metrics.toolDecision.add(1, {
-        ...baseAttributes(state, sessionID),
+        ...commonAttributes(state, sessionID),
         tool_name: tool,
         decision: "execute",
       })
@@ -282,10 +313,10 @@ export function handleEvent(
           : undefined
         if (typeof cmd === "string") {
           if (/\bgit\s+commit\b/.test(cmd)) {
-            telemetry.metrics.commitCount.add(1, baseAttributes(state, sessionID))
+            telemetry.metrics.commitCount.add(1, commonAttributes(state, sessionID))
           }
           if (/\bgh\s+pr\s+create\b/.test(cmd) || /\bgit\s+push\b.*--.*pull-request/.test(cmd)) {
-            telemetry.metrics.pullRequestCount.add(1, baseAttributes(state, sessionID))
+            telemetry.metrics.pullRequestCount.add(1, commonAttributes(state, sessionID))
           }
         }
       }
@@ -296,7 +327,7 @@ export function handleEvent(
         const lines = outStr.split("\n").length
         if (lines > 0) {
           telemetry.metrics.linesOfCode.add(lines, {
-            ...baseAttributes(state, sessionID),
+            ...commonAttributes(state, sessionID),
             type: tool === "write" ? "added" : "modified",
           })
         }
@@ -310,12 +341,12 @@ export function handleEvent(
         "success": !output?.includes("Error"),
       }
       if (state.config.logToolDetails) {
-        eventAttrs["tool_args"] = JSON.stringify(args).slice(0, 2048)
+        eventAttrs["tool_args"] = JSON.stringify(args ?? {}).slice(0, 2048)
         eventAttrs["tool_result_size_bytes"] =
           typeof output === "string" ? output.length : 0
       }
 
-      telemetry.emitEvent(`${telemetry.prefix}.tool_result`, eventAttrs)
+      telemetry.emitEvent(`${telemetry.prefix}.tool_result`, "tool_result", eventAttrs)
       state.log.debug("tool_result emitted", { tool, durationMs })
       break
     }
@@ -327,6 +358,9 @@ export function handleEvent(
         .filter((p) => p.type === "text" && p.text)
         .map((p) => p.text!)
         .join("\n")
+
+      // Generate a new prompt ID for this user prompt (matches Claude Code's randomUUID())
+      state.promptId = randomUUID()
 
       const attrs: Attributes = {
         ...eventAttributes(state, sessionID),
@@ -341,7 +375,7 @@ export function handleEvent(
         attrs["prompt"] = promptText.slice(0, 4096)
       }
 
-      telemetry.emitEvent(`${telemetry.prefix}.user_prompt`, attrs)
+      telemetry.emitEvent(`${telemetry.prefix}.user_prompt`, "user_prompt", attrs)
       state.log.debug("user_prompt emitted", {
         promptLength: promptText.length,
         agent,
@@ -378,7 +412,7 @@ function handleCommandBefore(
 
   const status = state.enabled ? "enabled" : "disabled"
   state.log.info(`telemetry ${status} via /otel command`)
-  state.telemetry.emitEvent(`${state.telemetry.prefix}.telemetry.toggled`, {
+  state.telemetry.emitEvent(`${state.telemetry.prefix}.telemetry.toggled`, "telemetry.toggled", {
     "telemetry.enabled": state.enabled,
   })
 

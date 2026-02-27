@@ -25,10 +25,13 @@ import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions"
+import { release } from "os"
 import { SeverityNumber } from "@opentelemetry/api-logs"
 
 import type { OtelConfig, TelemetryProfile } from "./config.js"
 import type { Counter, Attributes, Meter } from "@opentelemetry/api"
+import type { PushMetricExporter } from "@opentelemetry/sdk-metrics"
+import type { LogRecordExporter } from "@opentelemetry/sdk-logs"
 import type { Logger } from "./log.js"
 
 // ---------------------------------------------------------------------------
@@ -53,7 +56,7 @@ export interface TelemetryContext {
   meterProvider: MeterProvider
   /** Metric/event name prefix — "opencode" or "claude_code" */
   prefix: string
-  emitEvent: (name: string, attrs: Attributes) => void
+  emitEvent: (prefixedName: string, unprefixedName: string, attrs: Attributes) => void
   shutdown: () => Promise<void>
 }
 
@@ -64,6 +67,7 @@ export interface TelemetryContext {
 interface ProfileConfig {
   serviceName: string
   meterName: string
+  loggerName: string
   prefix: string
 }
 
@@ -71,11 +75,13 @@ const PROFILES: Record<TelemetryProfile, ProfileConfig> = {
   opencode: {
     serviceName: "opencode",
     meterName: "com.opencode.telemetry",
+    loggerName: "com.opencode.telemetry.events",
     prefix: "opencode",
   },
   "claude-code": {
     serviceName: "claude-code",
     meterName: "com.anthropic.claude_code",
+    loggerName: "com.anthropic.claude_code.events",
     prefix: "claude_code",
   },
 }
@@ -106,6 +112,7 @@ function buildResource(config: OtelConfig, pluginVersion: string): Resource {
     [ATTR_SERVICE_NAME]: profile.serviceName,
     [ATTR_SERVICE_VERSION]: pluginVersion,
     "os.type": process.platform,
+    "os.version": release(),
     "host.arch": arch,
   }
 
@@ -191,70 +198,108 @@ function buildLogsUrl(config: OtelConfig): string {
 
 const PLUGIN_VERSION = "0.1.0"
 
-export function initTelemetry(config: OtelConfig, log: Logger): TelemetryContext {
+/**
+ * Optional overrides for dependency injection (used by tests).
+ * When provided, these exporters replace the ones that would normally
+ * be created from the config.
+ */
+export interface TelemetryOptions {
+  /** Override the metric exporter (e.g. InMemoryMetricExporter for tests). */
+  metricExporter?: PushMetricExporter
+  /** Override the log record exporter (e.g. InMemoryLogRecordExporter for tests). */
+  logExporter?: LogRecordExporter
+}
+
+export function initTelemetry(
+  config: OtelConfig,
+  log: Logger,
+  options?: TelemetryOptions,
+): TelemetryContext {
   const profile = PROFILES[config.telemetryProfile]
   const p = profile.prefix
   const resource = buildResource(config, PLUGIN_VERSION)
 
   // --- Metrics ---
   const meterProvider = new MeterProvider({ resource })
-  const metricReader = createMetricReader(config)
-  if (metricReader) {
-    meterProvider.addMetricReader(metricReader)
+  if (options?.metricExporter) {
+    // Test mode: use the injected exporter
+    meterProvider.addMetricReader(
+      new PeriodicExportingMetricReader({
+        exporter: options.metricExporter,
+        exportIntervalMillis: config.metricExportIntervalMs,
+      }),
+    )
+  } else {
+    const metricReader = createMetricReader(config)
+    if (metricReader) {
+      meterProvider.addMetricReader(metricReader)
+    }
   }
   const meter = meterProvider.getMeter(profile.meterName, PLUGIN_VERSION)
 
   const metrics: OtelMetrics = {
     sessionCount: meter.createCounter(`${p}.session.count`, {
-      description: "Number of sessions started",
-      unit: "count",
+      description: "Count of CLI sessions started",
     }),
     linesOfCode: meter.createCounter(`${p}.lines_of_code.count`, {
-      description: "Lines of code added or removed",
-      unit: "count",
+      description: "Count of lines of code modified, with the 'type' attribute indicating whether lines were added or removed",
     }),
     pullRequestCount: meter.createCounter(`${p}.pull_request.count`, {
       description: "Number of pull requests created",
-      unit: "count",
     }),
     commitCount: meter.createCounter(`${p}.commit.count`, {
-      description: "Number of commits created",
-      unit: "count",
+      description: "Number of git commits created",
     }),
     costUsage: meter.createCounter(`${p}.cost.usage`, {
-      description: "LLM API cost in USD",
+      description: "Cost of the Claude Code session",
       unit: "USD",
     }),
     tokenUsage: meter.createCounter(`${p}.token.usage`, {
-      description: "Token usage by type",
+      description: "Number of tokens used",
       unit: "tokens",
     }),
     toolDecision: meter.createCounter(`${p}.tool.decision`, {
-      description: "Tool execution decisions",
-      unit: "count",
+      description: "Count of code editing tool permission decisions (accept/reject) for Edit, Write, and NotebookEdit tools",
     }),
     activeTime: meter.createCounter(`${p}.active_time.total`, {
-      description: "Active session time",
-      unit: "seconds",
+      description: "Total active time in seconds",
+      unit: "s",
     }),
   }
 
   // --- Logs (Events) ---
   const loggerProvider = new LoggerProvider({ resource })
-  const logProcessor = createLogProcessor(config)
-  if (logProcessor) {
-    loggerProvider.addLogRecordProcessor(logProcessor)
+  if (options?.logExporter) {
+    // Test mode: use the injected exporter with SimpleLogRecordProcessor
+    // for immediate (synchronous) export
+    loggerProvider.addLogRecordProcessor(
+      new SimpleLogRecordProcessor(options.logExporter),
+    )
+  } else {
+    const logProcessor = createLogProcessor(config)
+    if (logProcessor) {
+      loggerProvider.addLogRecordProcessor(logProcessor)
+    }
   }
-  const logger = loggerProvider.getLogger(profile.meterName, PLUGIN_VERSION)
+  const logger = loggerProvider.getLogger(profile.loggerName, PLUGIN_VERSION)
 
-  function emitEvent(name: string, attrs: Attributes) {
-    log.debug("emitEvent", { name, attributes: attrs })
+  /**
+   * Emit an OTEL log event.
+   *
+   * @param prefixedName - Full event name with profile prefix (e.g. "claude_code.user_prompt").
+   *                       Used as the log body.
+   * @param unprefixedName - Short event name without prefix (e.g. "user_prompt").
+   *                         Used as the `event.name` attribute (matches Claude Code behavior).
+   * @param attrs - Additional attributes for the log record.
+   */
+  function emitEvent(prefixedName: string, unprefixedName: string, attrs: Attributes) {
+    log.debug("emitEvent", { name: prefixedName, attributes: attrs })
     logger.emit({
       severityNumber: SeverityNumber.INFO,
       severityText: "INFO",
-      body: name,
+      body: prefixedName,
       attributes: {
-        "event.name": name,
+        "event.name": unprefixedName,
         ...attrs,
       },
     })
