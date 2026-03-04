@@ -26,10 +26,12 @@ The project includes two helper scripts:
 ## Step 1: Build and install the plugin locally
 
 ```bash
-bun run install-local
-```
+# Install via npm into ~/.config/opencode/ and register in opencode.json
+bun run plugin-install:npm
 
-This builds the plugin and symlinks it into `~/.config/opencode/plugins/`.
+# Or install as a symlink into ~/.config/opencode/plugins/
+bun run plugin-install:local
+```
 
 ## Step 2: Configure both tools
 
