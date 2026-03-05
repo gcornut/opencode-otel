@@ -72,14 +72,46 @@ export const OpenCodeOtelPlugin: Plugin = async (ctx) => {
 
   log.info("plugin started, hooks registered")
 
-  // Register shutdown handlers for clean teardown
-  const doShutdown = async () => {
-    log.info("shutting down telemetry")
-    await telemetry.shutdown()
+  // Register shutdown handlers for clean teardown.
+  //
+  // The plugin framework has no shutdown hook, so we rely on process signals.
+  // Key concerns:
+  // - gRPC exporters hold a persistent HTTP/2 connection that keeps the event
+  //   loop alive, preventing "beforeExit" from ever firing.
+  // - If the collector is unreachable, shutdown can hang — we add a timeout.
+  // - Signal handlers suppress default exit behavior, so we must call
+  //   process.exit() explicitly.
+  let shuttingDown = false
+  const SHUTDOWN_TIMEOUT_MS = 5_000
+
+  const doShutdown = async (signal?: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    log.info("shutting down telemetry", signal ? { signal } : {})
+
+    // Race shutdown against a timeout so a hung exporter can't block exit
+    const timeout = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, SHUTDOWN_TIMEOUT_MS)
+      // Unref so this timer alone doesn't keep the process alive
+      if (typeof timer === "object" && "unref" in timer) timer.unref()
+    })
+    await Promise.race([telemetry.shutdown(), timeout])
   }
-  process.on("beforeExit", doShutdown)
-  process.on("SIGINT", doShutdown)
-  process.on("SIGTERM", doShutdown)
+
+  // On SIGINT/SIGTERM: flush, shutdown, then exit.
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, async () => {
+      await doShutdown(signal)
+      process.exit(0)
+    })
+  }
+
+  // "exit" is synchronous and fires right before the process terminates
+  // (including after process.exit() calls). We can't await here, but we
+  // start shutdown as a best-effort in case no signal was caught.
+  process.on("beforeExit", async () => {
+    await doShutdown("beforeExit")
+  })
 
   /** Shared error handler for all hooks. */
   function onError(hook: string, e: unknown, extra?: Record<string, unknown>) {

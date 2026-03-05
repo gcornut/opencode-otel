@@ -335,9 +335,13 @@ export function initTelemetry(
   }
 
   async function shutdown() {
+    // Flush first, then shutdown — must be sequenced because shutdown()
+    // internally calls flush and races with a concurrent forceFlush().
     await Promise.allSettled([
       meterProvider.forceFlush(),
       loggerProvider.forceFlush(),
+    ])
+    await Promise.allSettled([
       meterProvider.shutdown(),
       loggerProvider.shutdown(),
     ])
