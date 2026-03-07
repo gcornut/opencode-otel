@@ -139,15 +139,26 @@ function capitalizeToolName(name: string): string {
 
 /**
  * Check if telemetry should be emitted based on provider filtering.
- * When onlyForProvider is configured, telemetry is only emitted when:
- * - The current provider matches the configured provider (exact match)
+ * When onlyForProvider or onlyForProviders is configured, telemetry is only emitted when:
+ * - The current provider matches one of the configured providers (exact match)
  * - OR no chat message has been sent yet (first message will set the provider)
  * 
  * Returns true if telemetry should be emitted, false if it should be skipped.
  */
 function shouldEmitTelemetry(state: HookState): boolean {
+  // Build list of allowed providers from both config options
+  const allowedProviders: string[] = []
+  
+  if (state.config.onlyForProvider) {
+    allowedProviders.push(state.config.onlyForProvider)
+  }
+  
+  if (state.config.onlyForProviders) {
+    allowedProviders.push(...state.config.onlyForProviders)
+  }
+  
   // If no provider filter is configured, always emit
-  if (!state.config.onlyForProvider) {
+  if (allowedProviders.length === 0) {
     return true
   }
   
@@ -157,8 +168,8 @@ function shouldEmitTelemetry(state: HookState): boolean {
     return false
   }
   
-  // Exact match on provider ID
-  return state.currentProvider === state.config.onlyForProvider
+  // Check if current provider is in the allowed list
+  return allowedProviders.includes(state.currentProvider)
 }
 // ---------------------------------------------------------------------------
 
@@ -261,9 +272,13 @@ export function handleEvent(
   
   // --- Check provider filtering ---
   if (!shouldEmitTelemetry(state)) {
+    const allowedProviders = [
+      ...(state.config.onlyForProvider ? [state.config.onlyForProvider] : []),
+      ...(state.config.onlyForProviders || []),
+    ]
     state.log.debug("skipping telemetry - provider filter mismatch", {
       currentProvider: state.currentProvider,
-      onlyForProvider: state.config.onlyForProvider,
+      allowedProviders,
     })
     return
   }

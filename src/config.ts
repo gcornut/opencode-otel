@@ -48,6 +48,7 @@ export const JsonConfigSchema = v.object({
   includeAccountUuid: v.optional(v.boolean()),
   telemetryProfile: v.optional(TelemetryProfileSchema),
   onlyForProvider: v.optional(v.string()),
+  onlyForProviders: v.optional(v.array(v.string())),
 })
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ export const OtelConfigSchema = v.object({
   includeAccountUuid: v.boolean(),
   telemetryProfile: TelemetryProfileSchema,
   onlyForProvider: v.optional(v.string()),
+  onlyForProviders: v.optional(v.array(v.string())),
 })
 
 // ---------------------------------------------------------------------------
@@ -181,6 +183,7 @@ export async function loadConfig(): Promise<OtelConfig | undefined> {
     includeAccountUuid: json.includeAccountUuid ?? true,
     telemetryProfile: json.telemetryProfile ?? "opencode",
     onlyForProvider: json.onlyForProvider,
+    onlyForProviders: json.onlyForProviders,
   }
 
   // Final validation

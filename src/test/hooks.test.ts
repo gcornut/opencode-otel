@@ -1915,6 +1915,118 @@ describe("provider filtering", () => {
     const metrics = h.getMetricsByName("opencode.session.count")
     expect(metrics.length).toBe(1)
   })
+
+  test("onlyForProviders array matches first provider", async () => {
+    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "vertex", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(1)
+    expect(h.state.currentProvider).toBe("vertex")
+  })
+
+  test("onlyForProviders array matches second provider", async () => {
+    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(1)
+    expect(h.state.currentProvider).toBe("anthropic")
+  })
+
+  test("onlyForProviders array skips non-matching provider", async () => {
+    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "openai", modelID: "gpt-4" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(0)
+    expect(h.state.currentProvider).toBe("openai")
+  })
+
+  test("both onlyForProvider and onlyForProviders work together", async () => {
+    const h = setup({ onlyForProvider: "vertex", onlyForProviders: ["anthropic"] })
+
+    // Should match first provider from onlyForProvider
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "vertex", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test 1" } },
+    })
+
+    // Should match second provider from onlyForProviders
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-2",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-2", title: "Test 2" } },
+    })
+
+    await h.flush()
+
+    // Both should be emitted
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(2)
+  })
 })
 
 describe("metric instrument metadata", () => {
