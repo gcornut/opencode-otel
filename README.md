@@ -123,7 +123,19 @@ To emit telemetry for multiple providers, use an array:
 }
 ```
 
-When `onlyForProvider` is set, telemetry is only emitted if the current chat is using one of those providers. The first `chat.message` event captures the provider ID, and subsequent events are filtered accordingly. If no provider matches, telemetry is silently skipped.
+When `onlyForProvider` is set, telemetry filtering works as follows:
+
+1. **Before first `chat.message`**: Provider-specific events are buffered until the provider is known
+2. **After provider detected**:
+   - **Provider matches** → buffered events are flushed and subsequent events are emitted
+   - **Provider doesn't match** → buffered events are discarded and subsequent events are skipped
+3. **Provider switching**: If the user changes to a different provider mid-session, telemetry automatically toggles on/off based on the new provider
+
+**Provider-agnostic metrics** (always emitted regardless of provider):
+- Session count, active time, lines of code, tool decisions, commits, pull requests
+
+**Provider-specific telemetry** (filtered by provider):
+- Token usage, cost, API requests, tool results, user prompts, error events
 
 Common provider IDs: `google-vertex-anthropic`, `google-vertex`, `opencode`, `anthropic`.
 

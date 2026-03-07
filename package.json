@@ -23,6 +23,7 @@
     "test:only-for-provider": "bun scripts/test-only-for-provider.ts",
     "test:only-for-provider:e2e": "bun scripts/otel-collector.ts -o e2e-test-results.jsonl",
     "test:only-for-provider:verify": "bun scripts/verify-e2e.ts e2e-test-results.jsonl",
+    "test:e2e:run": "OPENCODE_OTEL_CONFIG_PATH=./scripts/e2e-test-config.json opencode",
     "lint": "bunx biome check src/",
     "plugin-install:npm": "bun scripts/plugin-install.ts npm",
     "plugin-install:local": "bun scripts/plugin-install.ts symlink"

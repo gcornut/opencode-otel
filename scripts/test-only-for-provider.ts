@@ -77,8 +77,8 @@ const scenarios: TestScenario[] = [
         properties: { linesAdded: 10 },
       },
     ],
-    expectedMetrics: 2,
-    expectedEvents: 2,
+    expectedMetrics: 2, // session.count + lines_of_code (provider-agnostic)
+    expectedEvents: 2, // user_prompt + session.created
     description: "When onlyForProvider matches the chat provider, telemetry should be emitted",
   },
   {
@@ -102,9 +102,9 @@ const scenarios: TestScenario[] = [
         properties: { linesAdded: 10 },
       },
     ],
-    expectedMetrics: 0,
-    expectedEvents: 1, // user_prompt is emitted before provider filter is applied (on first chat.message)
-    description: "When onlyForProvider doesn't match, telemetry should be skipped (except user_prompt which captures the provider)",
+    expectedMetrics: 2, // session.count + lines_of_code (provider-agnostic, always emitted)
+    expectedEvents: 1, // user_prompt (captured before filter), session.created is skipped
+    description: "When onlyForProvider doesn't match, provider-specific events are skipped but provider-agnostic metrics still emit",
   },
   {
     name: "Unknown provider (no model info)",
@@ -122,42 +122,63 @@ const scenarios: TestScenario[] = [
         properties: { info: { id: "s1", title: "Test" } },
       },
     ],
-    expectedMetrics: 0,
-    expectedEvents: 0, // no user_prompt because no model
-    description: "When provider is unknown (no model info), telemetry should be conservatively skipped",
+    expectedMetrics: 1, // session.count (provider-agnostic)
+    expectedEvents: 1, // user_prompt (always emitted, no provider info available)
+    description: "When provider is unknown (no model info), provider-specific events are buffered, provider-agnostic metrics emit, user_prompt still captured",
   },
   {
-    name: "Provider switching mid-session",
+    name: "Buffering: events before first chat.message are buffered",
     onlyForProvider: "vertex",
     events: [
       {
+        // Events before first chat.message should be buffered
+        type: "session.created",
+        properties: { info: { id: "s1", title: "Test" } },
+      },
+      {
+        type: "file.edited",
+        properties: { linesAdded: 10 },
+      },
+      {
+        // First chat.message determines provider and flushes buffer
         type: "chat.message",
         properties: {
           sessionID: "s1",
           model: { providerID: "vertex", modelID: "claude-sonnet-4" },
-          parts: [{ type: "text", text: "first" }],
+          parts: [{ type: "text", text: "hello" }],
         },
-      },
-      {
-        type: "session.created",
-        properties: { info: { id: "s1", title: "Test 1" } },
-      },
-      {
-        type: "chat.message",
-        properties: {
-          sessionID: "s2",
-          model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
-          parts: [{ type: "text", text: "second" }],
-        },
-      },
-      {
-        type: "session.created",
-        properties: { info: { id: "s2", title: "Test 2" } },
       },
     ],
-    expectedMetrics: 1, // Only first session (vertex provider)
-    expectedEvents: 3, // user_prompt (vertex), session.created (vertex), user_prompt (anthropic - captured before filter)
-    description: "When provider changes mid-session, only matching provider events should be emitted after the switch",
+    expectedMetrics: 2, // session.count + lines_of_code (provider-agnostic, always emitted)
+    expectedEvents: 2, // session.created (flushed from buffer) + user_prompt
+    description: "Events before first chat.message are buffered and flushed when provider matches",
+  },
+  {
+    name: "Buffering: buffered events cleared when provider doesn't match",
+    onlyForProvider: "vertex",
+    events: [
+      {
+        // Events before first chat.message should be buffered
+        type: "session.created",
+        properties: { info: { id: "s1", title: "Test" } },
+      },
+      {
+        type: "file.edited",
+        properties: { linesAdded: 10 },
+      },
+      {
+        // First chat.message determines provider - doesn't match, so buffer is cleared
+        type: "chat.message",
+        properties: {
+          sessionID: "s1",
+          model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
+          parts: [{ type: "text", text: "hello" }],
+        },
+      },
+    ],
+    expectedMetrics: 2, // session.count + lines_of_code (provider-agnostic, always emitted)
+    expectedEvents: 1, // user_prompt (captured before filter is applied)
+    description: "Buffered events are cleared when provider doesn't match, but provider-agnostic metrics still emit",
   },
 ]
 
@@ -208,7 +229,9 @@ async function runScenario(scenario: TestScenario): Promise<boolean> {
     includeVersion: false,
     includeAccountUuid: false,
     telemetryProfile: "opencode",
-    onlyForProvider: scenario.onlyForProvider,
+    onlyForProvider: scenario.onlyForProvider 
+      ? [scenario.onlyForProvider] 
+      : undefined,
   }
 
   // Create in-memory exporters

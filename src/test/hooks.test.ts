@@ -1708,10 +1708,10 @@ describe("edge cases", () => {
 // ===========================================================================
 
 describe("provider filtering", () => {
-  test("telemetry is skipped when onlyForProvider is set but no chat.message received", async () => {
+  test("provider-specific events are buffered when onlyForProvider is set but no chat.message received", async () => {
     const h = setup({ onlyForProvider: ["vertex"] })
 
-    // Before any chat.message, provider is unknown, so telemetry should be skipped
+    // Before any chat.message, provider is unknown, so provider-specific events should be buffered
     h.emit({
       type: "session.created",
       properties: { info: { id: "sess-1", title: "Test" } },
@@ -1719,12 +1719,16 @@ describe("provider filtering", () => {
 
     await h.flush()
 
-    // No metrics should be emitted because provider is unknown
+    // Provider-agnostic metrics ARE emitted immediately (session count)
     const metrics = h.getMetricsByName("opencode.session.count")
-    expect(metrics.length).toBe(0)
+    expect(metrics.length).toBe(1)
+    
+    // But provider-specific events (logs) are buffered
+    expect(h.state.providerMatch).toBeUndefined()
+    expect(h.state.pendingEvents.length).toBeGreaterThan(0)
   })
 
-  test("telemetry is emitted when provider matches onlyForProvider", async () => {
+  test("provider-specific events are flushed when provider matches onlyForProvider", async () => {
     const h = setup({ onlyForProvider: ["vertex"] })
 
     // First, send a chat.message with matching provider
@@ -1737,7 +1741,7 @@ describe("provider filtering", () => {
       },
     })
 
-    // Now telemetry should be enabled for vertex provider
+    // Buffer should be flushed, now telemetry should be enabled for vertex provider
     h.emit({
       type: "session.created",
       properties: { info: { id: "sess-1", title: "Test" } },
@@ -1748,9 +1752,11 @@ describe("provider filtering", () => {
     const metrics = h.getMetricsByName("opencode.session.count")
     expect(metrics.length).toBe(1)
     expect(h.state.currentProvider).toBe("vertex")
+    expect(h.state.providerMatch).toBe(true)
+    expect(h.state.pendingEvents.length).toBe(0) // Buffer cleared after flush
   })
 
-  test("telemetry is skipped when provider does not match onlyForProvider", async () => {
+  test("provider-specific events are cleared when provider does not match onlyForProvider", async () => {
     const h = setup({ onlyForProvider: ["vertex"] })
 
     // First, send a chat.message with non-matching provider
@@ -1763,7 +1769,8 @@ describe("provider filtering", () => {
       },
     })
 
-    // Telemetry should be skipped for anthropic provider when we only want vertex
+    // Provider doesn't match - telemetry should be disabled for anthropic provider
+    // But provider-agnostic metrics still emit
     h.emit({
       type: "session.created",
       properties: { info: { id: "sess-1", title: "Test" } },
@@ -1771,9 +1778,12 @@ describe("provider filtering", () => {
 
     await h.flush()
 
+    // Provider-agnostic metrics ARE emitted (session count)
     const metrics = h.getMetricsByName("opencode.session.count")
-    expect(metrics.length).toBe(0)
+    expect(metrics.length).toBe(1)
     expect(h.state.currentProvider).toBe("anthropic")
+    expect(h.state.providerMatch).toBe(false)
+    expect(h.state.pendingEvents.length).toBe(0) // Buffer cleared
   })
 
   test("provider is captured from chat.message without model details", async () => {
@@ -1795,10 +1805,12 @@ describe("provider filtering", () => {
 
     await h.flush()
 
-    // No model info means provider stays undefined, so telemetry is skipped
+    // No model info means provider stays undefined, events stay buffered
     const metrics = h.getMetricsByName("opencode.session.count")
-    expect(metrics.length).toBe(0)
+    expect(metrics.length).toBe(1) // Provider-agnostic metrics still emit
     expect(h.state.currentProvider).toBeUndefined()
+    expect(h.state.providerMatch).toBeUndefined()
+    expect(h.state.pendingEvents.length).toBeGreaterThan(0) // Still buffering
   })
 
   test("provider filtering does not affect /otel command", () => {
@@ -1886,10 +1898,12 @@ describe("provider filtering", () => {
 
     await h.flush()
 
-    // Only first session should be emitted (vertex provider)
+    // Both sessions should have metrics (provider-agnostic)
+    // But provider-specific events (logs) will be filtered for anthropic
     const metrics = h.getMetricsByName("opencode.session.count")
-    expect(metrics.length).toBe(1)
+    expect(metrics.length).toBe(2)
     expect(metrics[0].attributes["session.id"]).toBe("sess-1")
+    expect(metrics[1].attributes["session.id"]).toBe("sess-2")
   })
 
   test("without onlyForProvider, all providers are allowed", async () => {
@@ -1983,9 +1997,12 @@ describe("provider filtering", () => {
 
     await h.flush()
 
+    // Provider-agnostic metrics ARE emitted (session count)
+    // But provider-specific events are skipped
     const metrics = h.getMetricsByName("opencode.session.count")
-    expect(metrics.length).toBe(0)
+    expect(metrics.length).toBe(1)
     expect(h.state.currentProvider).toBe("openai")
+    expect(h.state.providerMatch).toBe(false)
   })
 
   test("onlyForProvider array with multiple providers", async () => {

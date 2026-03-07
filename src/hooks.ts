@@ -52,6 +52,11 @@ export interface HookState {
   opencodeVersion: string | undefined
   /** Current model provider ID (captured from chat.message events). */
   currentProvider: string | undefined
+  /** Provider match state — undefined means still buffering (waiting for first provider),
+   *  true means provider matches and we emit telemetry, false means skip telemetry. */
+  providerMatch: boolean | undefined
+  /** Buffered provider-specific events (emitted once provider is known). */
+  pendingEvents: Array<() => void>
 }
 
 export function createHookState(config: OtelConfig, telemetry: TelemetryContext, log: Logger): HookState {
@@ -69,6 +74,8 @@ export function createHookState(config: OtelConfig, telemetry: TelemetryContext,
     promptId: undefined,
     opencodeVersion: undefined,
     currentProvider: undefined,
+    providerMatch: config.onlyForProvider ? undefined : true,
+    pendingEvents: [],
   }
 }
 
@@ -134,31 +141,122 @@ function capitalizeToolName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Provider filtering
+// Provider filtering with buffering
 // ---------------------------------------------------------------------------
 
+const MAX_PENDING_EVENTS = 100
+
 /**
- * Check if telemetry should be emitted based on provider filtering.
- * When onlyForProvider is configured (as an array of provider IDs), telemetry is only emitted when:
- * - The current provider matches one of the configured providers (exact match)
- * - OR no chat message has been sent yet (first message will set the provider)
- * 
- * Returns true if telemetry should be emitted, false if it should be skipped.
+ * Check if a provider ID matches the configured onlyForProvider filter.
  */
-function shouldEmitTelemetry(state: HookState): boolean {
-  // If no provider filter is configured, always emit
+function checkProviderMatch(state: HookState, providerId: string): boolean {
   if (!state.config.onlyForProvider || state.config.onlyForProvider.length === 0) {
     return true
   }
+  return state.config.onlyForProvider.includes(providerId)
+}
+
+/**
+ * Set the provider match state when provider is detected.
+ * Flushes pending events if provider matches, clears them otherwise.
+ */
+function setProviderMatch(state: HookState, providerId: string): void {
+  state.currentProvider = providerId
+  const newMatch = checkProviderMatch(state, providerId)
   
-  // If provider is configured but we don't know the current provider yet,
-  // be conservative and skip telemetry (it will be enabled after first chat.message)
-  if (!state.currentProvider) {
+  state.log.debug("provider match state updated", {
+    provider: providerId,
+    match: newMatch,
+    wasBuffering: state.providerMatch === undefined,
+  })
+  
+  state.providerMatch = newMatch
+  
+  if (newMatch) {
+    // Provider matches - flush all pending events
+    state.log.debug("flushing pending events", { count: state.pendingEvents.length })
+    for (const emit of state.pendingEvents) {
+      emit()
+    }
+    state.pendingEvents = []
+  } else {
+    // Provider doesn't match - clear pending events
+    if (state.pendingEvents.length > 0) {
+      state.log.debug("clearing pending events (provider mismatch)", { count: state.pendingEvents.length })
+      state.pendingEvents = []
+    }
+  }
+}
+
+/**
+ * Buffer a provider-specific event for later emission.
+ * Returns true if buffered, false if buffer is full.
+ */
+function bufferEvent(state: HookState, emit: () => void): boolean {
+  if (state.pendingEvents.length >= MAX_PENDING_EVENTS) {
+    state.log.debug("pending events buffer full, dropping event")
     return false
   }
+  state.pendingEvents.push(emit)
+  return true
+}
+
+/**
+ * Emit a provider-agnostic metric immediately (never buffered).
+ */
+function emitProviderAgnosticMetric(
+  state: HookState,
+  metricName: string,
+  value: number,
+  attributes: Attributes,
+): void {
+  // Always emit provider-agnostic metrics regardless of provider state
+  if (metricName === "tokenUsage") {
+    state.telemetry.metrics.tokenUsage.add(value, attributes)
+  } else if (metricName === "sessionCount") {
+    state.telemetry.metrics.sessionCount.add(value, attributes)
+  } else if (metricName === "activeTime") {
+    state.telemetry.metrics.activeTime.add(value, attributes)
+  } else if (metricName === "linesOfCode") {
+    state.telemetry.metrics.linesOfCode.add(value, attributes)
+  } else if (metricName === "costUsage") {
+    state.telemetry.metrics.costUsage.add(value, attributes)
+  } else if (metricName === "toolDecision") {
+    state.telemetry.metrics.toolDecision.add(value, attributes)
+  } else if (metricName === "commitCount") {
+    state.telemetry.metrics.commitCount.add(value, attributes)
+  } else if (metricName === "pullRequestCount") {
+    state.telemetry.metrics.pullRequestCount.add(value, attributes)
+  }
+}
+
+/**
+ * Emit a provider-specific log event.
+ * If provider is still unknown, buffers the event.
+ * If provider matches, emits immediately.
+ * If provider doesn't match, skips.
+ */
+function emitProviderSpecificEvent(
+  state: HookState,
+  eventName: string,
+  eventType: string,
+  attributes: Attributes,
+): void {
+  const emit = () => {
+    state.telemetry.emitEvent(eventName, eventType, attributes)
+  }
   
-  // Check if current provider is in the allowed list
-  return state.config.onlyForProvider.includes(state.currentProvider)
+  if (state.providerMatch === undefined) {
+    // Still buffering
+    const buffered = bufferEvent(state, emit)
+    if (buffered) {
+      state.log.debug("buffered provider-specific event", { eventType, bufferSize: state.pendingEvents.length })
+    }
+  } else if (state.providerMatch === true) {
+    // Provider matches - emit immediately
+    emit()
+  }
+  // If false, silently skip
 }
 // ---------------------------------------------------------------------------
 
@@ -173,6 +271,9 @@ function emitTokenMetrics(
   tokens: { input?: number; output?: number; cache?: { read?: number; write?: number } },
   model: string,
 ): void {
+  // Token metrics are provider-specific - skip if provider doesn't match
+  if (state.providerMatch === false) return
+  
   const { telemetry } = state
   if (tokens.input) {
     telemetry.metrics.tokenUsage.add(tokens.input, {
@@ -250,22 +351,25 @@ export function handleEvent(
   // --- Skip everything else when telemetry is disabled ---
   if (!state.enabled) return
   
-  // --- Capture provider from chat.message events ---
+  // --- Capture provider from chat.message events and set match state ---
   if (event.type === "chat.message") {
     const model = event.properties?.model
-    if (model?.providerID) {
-      state.currentProvider = model.providerID
-      state.log.debug("captured model provider", { provider: model.providerID })
+    if (model?.providerID && model.providerID !== state.currentProvider) {
+      setProviderMatch(state, model.providerID)
     }
   }
   
-  // --- Check provider filtering ---
-  if (!shouldEmitTelemetry(state)) {
-    state.log.debug("skipping telemetry - provider filter mismatch", {
-      currentProvider: state.currentProvider,
-      allowedProviders: state.config.onlyForProvider,
-    })
-    return
+  // --- Provider switching: if provider changed mid-session, update match state ---
+  // This handles cases where user switches to a different model in the same session
+  if (state.currentProvider) {
+    const newMatch = checkProviderMatch(state, state.currentProvider)
+    if (newMatch !== state.providerMatch) {
+      state.providerMatch = newMatch
+      state.log.debug("provider match toggled", {
+        provider: state.currentProvider,
+        match: newMatch,
+      })
+    }
   }
 
   const { telemetry } = state
@@ -285,14 +389,21 @@ export function handleEvent(
         if (!state.opencodeVersion && props.info?.version) {
           state.opencodeVersion = props.info.version
         }
+        // Provider-agnostic metric: always emit immediately
         telemetry.metrics.sessionCount.add(1, commonAttributes(state, sessionId))
         // Claude Code does not emit a session.created log event — only the metric.
         // Skip this event in claude-code profile to match.
+        // Provider-specific event: buffer if needed
         if (telemetry.profile !== "claude-code") {
-          telemetry.emitEvent(`${telemetry.prefix}.session.created`, "session.created", {
-            ...eventAttributes(state, sessionId),
-            "session.title": props.info?.title ?? "",
-          })
+          emitProviderSpecificEvent(
+            state,
+            `${telemetry.prefix}.session.created`,
+            "session.created",
+            {
+              ...eventAttributes(state, sessionId),
+              "session.title": props.info?.title ?? "",
+            }
+          )
         }
         state.log.debug("session.created", { sessionId })
       }
@@ -347,7 +458,7 @@ export function handleEvent(
     case "message.part.updated": {
       const part = props.part ?? props
 
-      // Handle retry parts — emit api_error event
+      // Handle retry parts — emit api_error event (provider-specific)
       if (part.type === "retry") {
         const sessionId = part.sessionID ?? props.sessionID
         const error = part.error
@@ -362,7 +473,8 @@ export function handleEvent(
         if (error?.data?.isRetryable !== undefined) {
           errorPayload["error.is_retryable"] = error.data.isRetryable
         }
-        telemetry.emitEvent(
+        emitProviderSpecificEvent(
+          state,
           `${telemetry.prefix}.api_error`,
           "api_error",
           {
@@ -399,8 +511,8 @@ export function handleEvent(
       // Token metrics
       emitTokenMetrics(state, sessionId, tokens, model)
 
-      // Cost metric
-      if (typeof cost === "number" && cost > 0) {
+      // Cost metric (provider-specific)
+      if (typeof cost === "number" && cost > 0 && state.providerMatch !== false) {
         telemetry.metrics.costUsage.add(cost, {
           ...commonAttributes(state, sessionId),
           model,
@@ -412,7 +524,7 @@ export function handleEvent(
         ? msg.time.completed - msg.time.created
         : 0
 
-      // api_request event
+      // api_request event (provider-specific)
       const apiPayload: Attributes = {
         model,
         "input_tokens": tokens.input ?? 0,
@@ -423,7 +535,8 @@ export function handleEvent(
         "duration_ms": durationMs,
         "speed": "normal",
       }
-      telemetry.emitEvent(
+      emitProviderSpecificEvent(
+        state,
         `${telemetry.prefix}.api_request`,
         "api_request",
         {
@@ -432,7 +545,7 @@ export function handleEvent(
         },
       )
 
-      // Emit api_error event if the message has an error
+      // Emit api_error event if the message has an error (provider-specific)
       if (msg.error) {
         const errorPayload: Attributes = {
           "error.name": msg.error.name ?? "UnknownError",
@@ -441,7 +554,8 @@ export function handleEvent(
         if (msg.error.data?.statusCode) {
           errorPayload["error.status_code"] = msg.error.data.statusCode
         }
-        telemetry.emitEvent(
+        emitProviderSpecificEvent(
+          state,
           `${telemetry.prefix}.api_error`,
           "api_error",
           {
@@ -475,7 +589,8 @@ export function handleEvent(
         if (error.data?.isRetryable !== undefined) {
           errorPayload["error.is_retryable"] = error.data.isRetryable
         }
-        telemetry.emitEvent(
+        emitProviderSpecificEvent(
+          state,
           `${telemetry.prefix}.api_error`,
           "api_error",
           {
@@ -579,7 +694,7 @@ export function handleEvent(
         }
       }
 
-      // Emit tool_result event
+      // Emit tool_result event (provider-specific)
       const displayToolName = telemetry.profile === "claude-code"
         ? capitalizeToolName(tool) : tool
       const toolPayload: Attributes = {
@@ -593,7 +708,8 @@ export function handleEvent(
           typeof output === "string" ? output.length : 0
       }
 
-      telemetry.emitEvent(
+      emitProviderSpecificEvent(
+        state,
         `${telemetry.prefix}.tool_result`,
         "tool_result",
         {
@@ -632,6 +748,8 @@ export function handleEvent(
         payload["prompt"] = promptText.slice(0, 4096)
       }
 
+      // user_prompt event - ALWAYS emit immediately (contains provider detection info)
+      // This event is special because it triggers provider detection
       telemetry.emitEvent(
         `${telemetry.prefix}.user_prompt`,
         "user_prompt",

@@ -31,12 +31,22 @@ bun run otel:collect -o e2e-test-results.jsonl
 
 This starts a server on `http://localhost:4318` that receives OTLP HTTP/JSON.
 
-### Step 3: Configure OpenCode for Test
+### Step 3: Set Test Config Path
 
-Copy the test config to your OpenCode config directory:
+Instead of modifying your personal `~/.config/opencode/otel.json`, we'll use the `OPENCODE_OTEL_CONFIG_PATH` environment variable to point to a test-specific config:
 
 ```bash
-cp scripts/e2e-test-config.json ~/.config/opencode/otel.json
+export OPENCODE_OTEL_CONFIG_PATH=/Users/gcornut/git/opencode-otel/scripts/e2e-test-config.json
+```
+
+**Alternative**: Use the convenience wrapper script (no need to set env var):
+
+```bash
+# Run any opencode command with the test config
+./scripts/e2e-run.sh --model claude-sonnet-4-vertex
+
+# Or with a prompt
+./scripts/e2e-run.sh run -p "Say hello" --model claude-sonnet-4-vertex
 ```
 
 **Note**: This config has `onlyForProvider: "vertex"`, so it will only emit telemetry for Vertex AI provider.
@@ -46,7 +56,7 @@ cp scripts/e2e-test-config.json ~/.config/opencode/otel.json
 **Provider**: OpenCode Zen (Kimi K2.5)  
 **Expected**: No telemetry should be captured
 
-1. In a new terminal, run OpenCode with Kimi:
+1. In the same terminal where you set `OPENCODE_OTEL_CONFIG_PATH`, run OpenCode with Kimi:
 
 ```bash
 opencode run -p "Say hello" --model kimi-k2.5
@@ -69,7 +79,13 @@ opencode --model kimi-k2.5
 **Provider**: Vertex AI (Claude Sonnet 4.6)  
 **Expected**: Telemetry SHOULD be captured
 
-1. Run OpenCode with Vertex:
+1. Make sure `OPENCODE_OTEL_CONFIG_PATH` is still set (same terminal):
+
+```bash
+export OPENCODE_OTEL_CONFIG_PATH=/Users/gcornut/git/opencode-otel/scripts/e2e-test-config.json
+```
+
+2. Run OpenCode with Vertex:
 
 ```bash
 opencode run -p "Say hello from vertex" --model claude-sonnet-4-vertex
@@ -81,11 +97,11 @@ Or start interactive mode:
 opencode --model claude-sonnet-4-vertex
 ```
 
-2. Send a simple prompt like "Say hello from vertex"
+3. Send a simple prompt like "Say hello from vertex"
 
-3. Wait for the response to complete
+4. Wait for the response to complete
 
-4. **Verification**: Check the collector terminal - you should see new JSON lines added to `e2e-test-results.jsonl`
+5. **Verification**: Check the collector terminal - you should see new JSON lines added to `e2e-test-results.jsonl`
 
 ## Verification Steps
 
@@ -129,26 +145,21 @@ head -1 e2e-test-results.jsonl | jq '.scopeLogs[0].logRecords[] | select(.body =
 
 Press `Ctrl+C` in the collector terminal to stop it.
 
-### Restore Original Config
-
-If you had a previous config:
+### Unset Environment Variable
 
 ```bash
-# Restore your original config
-mv ~/.config/opencode/otel.json.backup ~/.config/opencode/otel.json
+unset OPENCODE_OTEL_CONFIG_PATH
 ```
 
-Or remove the test config:
-
-```bash
-rm ~/.config/opencode/otel.json
-```
+Or just close the terminal window where you ran the tests.
 
 ### Cleanup Test File
 
 ```bash
 rm e2e-test-results.jsonl
 ```
+
+**Your personal `~/.config/opencode/otel.json` was never modified!** 🎉
 
 ## Expected Results Summary
 
@@ -181,10 +192,18 @@ You should see `opencode-otel` directory or symlink.
 
 ### "Config not being read"
 
-Check config file exists and is valid JSON:
+Verify the environment variable is set:
 
 ```bash
-cat ~/.config/opencode/otel.json | jq .
+echo $OPENCODE_OTEL_CONFIG_PATH
+```
+
+Should output: `/Users/gcornut/git/opencode-otel/scripts/e2e-test-config.json`
+
+Check the test config file exists and is valid JSON:
+
+```bash
+cat $OPENCODE_OTEL_CONFIG_PATH | jq .
 ```
 
 ### Debug Mode
@@ -209,3 +228,25 @@ wc -l e2e-test-results.jsonl > /tmp/after_count.txt
 # Check if Test Case 2 added lines
 [ "$(cat /tmp/after_count.txt)" -gt "$(cat /tmp/before_count.txt)" ] && echo "✅ Telemetry captured" || echo "❌ No telemetry"
 ```
+
+## One-Liner Test Command
+
+For quick testing, you can run everything in one line:
+
+```bash
+export OPENCODE_OTEL_CONFIG_PATH=/Users/gcornut/git/opencode-otel/scripts/e2e-test-config.json && opencode run -p "Hello" --model claude-sonnet-4-vertex
+```
+
+## Alternative: npm Script
+
+You can also use the npm script to run OpenCode with the test config:
+
+```bash
+# From the project directory
+npm run test:e2e:run -- --model claude-sonnet-4-vertex
+
+# Or with a prompt
+npm run test:e2e:run -- run -p "Hello world"
+```
+
+This automatically sets the `OPENCODE_OTEL_CONFIG_PATH` for you.
