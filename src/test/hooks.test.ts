@@ -1709,7 +1709,7 @@ describe("edge cases", () => {
 
 describe("provider filtering", () => {
   test("telemetry is skipped when onlyForProvider is set but no chat.message received", async () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // Before any chat.message, provider is unknown, so telemetry should be skipped
     h.emit({
@@ -1725,7 +1725,7 @@ describe("provider filtering", () => {
   })
 
   test("telemetry is emitted when provider matches onlyForProvider", async () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // First, send a chat.message with matching provider
     h.emit({
@@ -1751,7 +1751,7 @@ describe("provider filtering", () => {
   })
 
   test("telemetry is skipped when provider does not match onlyForProvider", async () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // First, send a chat.message with non-matching provider
     h.emit({
@@ -1777,7 +1777,7 @@ describe("provider filtering", () => {
   })
 
   test("provider is captured from chat.message without model details", async () => {
-    const h = setup({ onlyForProvider: "anthropic" })
+    const h = setup({ onlyForProvider: ["anthropic"] })
 
     // chat.message without model info - provider stays undefined
     h.emit({
@@ -1802,7 +1802,7 @@ describe("provider filtering", () => {
   })
 
   test("provider filtering does not affect /otel command", () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // /otel command should work even when provider filter is set
     h.emit({
@@ -1819,7 +1819,7 @@ describe("provider filtering", () => {
   })
 
   test("provider is remembered across multiple events", async () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // First chat.message sets provider to vertex
     h.emit({
@@ -1852,7 +1852,7 @@ describe("provider filtering", () => {
   })
 
   test("provider can change between chat messages", async () => {
-    const h = setup({ onlyForProvider: "vertex" })
+    const h = setup({ onlyForProvider: ["vertex"] })
 
     // First message with vertex
     h.emit({
@@ -1916,8 +1916,8 @@ describe("provider filtering", () => {
     expect(metrics.length).toBe(1)
   })
 
-  test("onlyForProviders array matches first provider", async () => {
-    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+  test("onlyForProvider array matches first provider", async () => {
+    const h = setup({ onlyForProvider: ["vertex", "anthropic"] })
 
     h.emit({
       type: "chat.message",
@@ -1941,7 +1941,7 @@ describe("provider filtering", () => {
   })
 
   test("onlyForProviders array matches second provider", async () => {
-    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+    const h = setup({ onlyForProvider: ["vertex", "anthropic"] })
 
     h.emit({
       type: "chat.message",
@@ -1965,7 +1965,7 @@ describe("provider filtering", () => {
   })
 
   test("onlyForProviders array skips non-matching provider", async () => {
-    const h = setup({ onlyForProviders: ["vertex", "anthropic"] })
+    const h = setup({ onlyForProvider: ["vertex", "anthropic"] })
 
     h.emit({
       type: "chat.message",
@@ -1988,10 +1988,10 @@ describe("provider filtering", () => {
     expect(h.state.currentProvider).toBe("openai")
   })
 
-  test("both onlyForProvider and onlyForProviders work together", async () => {
-    const h = setup({ onlyForProvider: "vertex", onlyForProviders: ["anthropic"] })
+  test("onlyForProvider array with multiple providers", async () => {
+    const h = setup({ onlyForProvider: ["vertex", "anthropic"] })
 
-    // Should match first provider from onlyForProvider
+    // Should match first provider from array
     h.emit({
       type: "chat.message",
       properties: {
@@ -2006,7 +2006,7 @@ describe("provider filtering", () => {
       properties: { info: { id: "sess-1", title: "Test 1" } },
     })
 
-    // Should match second provider from onlyForProviders
+    // Should match second provider from array
     h.emit({
       type: "chat.message",
       properties: {

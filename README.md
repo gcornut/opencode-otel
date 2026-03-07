@@ -67,8 +67,7 @@ You can override the config file path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/o
 | `includeVersion` | boolean | `false` | Include `app.version` on metrics and events |
 | `includeAccountUuid` | boolean | `true` | Include `user.account_uuid` on metrics |
 | `telemetryProfile` | string | `"opencode"` | `"opencode"` or `"claude-code"` — emit events using Claude Code's naming |
-| `onlyForProvider` | string | | When set, only emit telemetry for this provider ID |
-| `onlyForProviders` | string[] | | When set, only emit telemetry for these provider IDs (array of provider IDs) |
+| `onlyForProvider` | string \| string[] | | When set, only emit telemetry for this provider ID(s). Single provider ID as string, or array of provider IDs |
 
 ### Telemetry profile
 
@@ -115,16 +114,16 @@ To only emit telemetry when using a specific model provider (e.g., only for Vert
 }
 ```
 
-To emit telemetry for multiple providers, use `onlyForProviders` (array):
+To emit telemetry for multiple providers, use an array:
 
 ```json
 {
   "endpoint": "https://otel-collector.example.com",
-  "onlyForProviders": ["google-vertex-anthropic", "google-vertex"]
+  "onlyForProvider": ["google-vertex-anthropic", "google-vertex"]
 }
 ```
 
-When `onlyForProvider` or `onlyForProviders` is set, telemetry is only emitted if the current chat is using one of those providers. The first `chat.message` event captures the provider ID, and subsequent events are filtered accordingly. If no provider matches, telemetry is silently skipped.
+When `onlyForProvider` is set, telemetry is only emitted if the current chat is using one of those providers. The first `chat.message` event captures the provider ID, and subsequent events are filtered accordingly. If no provider matches, telemetry is silently skipped.
 
 Common provider IDs: `google-vertex-anthropic`, `google-vertex`, `opencode`, `anthropic`.
 
