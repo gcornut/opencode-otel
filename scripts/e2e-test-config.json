@@ -1,0 +1,13 @@
+{
+  "endpoint": "http://localhost:4318",
+  "protocol": "http/json",
+  "metricsExporter": "otlp",
+  "logsExporter": "otlp",
+  "onlyForProvider": "vertex",
+  "logUserPrompts": true,
+  "logToolDetails": true,
+  "includeSessionId": true,
+  "resourceAttributes": {
+    "test.run": "e2e-only-for-provider"
+  }
+}

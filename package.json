@@ -20,6 +20,9 @@
     "test": "bun test",
     "otel:collect": "bun scripts/otel-collector.ts",
     "otel:compare": "bun scripts/otel-compare.ts",
+    "test:only-for-provider": "bun scripts/test-only-for-provider.ts",
+    "test:only-for-provider:e2e": "bun scripts/otel-collector.ts -o e2e-test-results.jsonl",
+    "test:only-for-provider:verify": "bun scripts/verify-e2e.ts e2e-test-results.jsonl",
     "lint": "bunx biome check src/",
     "plugin-install:npm": "bun scripts/plugin-install.ts npm",
     "plugin-install:local": "bun scripts/plugin-install.ts symlink"

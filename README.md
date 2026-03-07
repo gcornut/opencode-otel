@@ -67,6 +67,7 @@ You can override the config file path with `OPENCODE_OTEL_CONFIG_PATH=/path/to/o
 | `includeVersion` | boolean | `false` | Include `app.version` on metrics and events |
 | `includeAccountUuid` | boolean | `true` | Include `user.account_uuid` on metrics |
 | `telemetryProfile` | string | `"opencode"` | `"opencode"` or `"claude-code"` — emit events using Claude Code's naming |
+| `onlyForProvider` | string | | When set, only emit telemetry for this provider ID (e.g. `"vertex"`, `"anthropic"`) |
 
 ### Telemetry profile
 
@@ -101,6 +102,21 @@ To disable telemetry without removing the plugin, set both exporters to `"none"`
   "logsExporter": "none"
 }
 ```
+
+### Example: filter by provider
+
+To only emit telemetry when using a specific model provider (e.g., only for Vertex AI with Claude):
+
+```json
+{
+  "endpoint": "https://otel-collector.example.com",
+  "onlyForProvider": "google-vertex-anthropic"
+}
+```
+
+When `onlyForProvider` is set, telemetry is only emitted if the current chat is using that provider. The first `chat.message` event captures the provider ID, and subsequent events are filtered accordingly. If no provider matches, telemetry is silently skipped.
+
+Common provider IDs: `google-vertex-anthropic`, `google-vertex`, `opencode`, `anthropic`.
 
 ## Telemetry signals
 

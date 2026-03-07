@@ -42,6 +42,7 @@ const DEFAULT_TEST_CONFIG: OtelConfig = {
   includeVersion: false,
   includeAccountUuid: false,
   telemetryProfile: "opencode",
+  onlyForProvider: undefined,
 }
 
 /** Create a test config with optional overrides. */

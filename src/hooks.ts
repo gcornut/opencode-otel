@@ -50,6 +50,8 @@ export interface HookState {
   promptId: string | undefined
   /** OpenCode version, captured from the first session.created event. */
   opencodeVersion: string | undefined
+  /** Current model provider ID (captured from chat.message events). */
+  currentProvider: string | undefined
 }
 
 export function createHookState(config: OtelConfig, telemetry: TelemetryContext, log: Logger): HookState {
@@ -66,6 +68,7 @@ export function createHookState(config: OtelConfig, telemetry: TelemetryContext,
     terminalType: detectTerminal(),
     promptId: undefined,
     opencodeVersion: undefined,
+    currentProvider: undefined,
   }
 }
 
@@ -131,7 +134,32 @@ function capitalizeToolName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Token metrics helper
+// Provider filtering
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if telemetry should be emitted based on provider filtering.
+ * When onlyForProvider is configured, telemetry is only emitted when:
+ * - The current provider matches the configured provider (exact match)
+ * - OR no chat message has been sent yet (first message will set the provider)
+ * 
+ * Returns true if telemetry should be emitted, false if it should be skipped.
+ */
+function shouldEmitTelemetry(state: HookState): boolean {
+  // If no provider filter is configured, always emit
+  if (!state.config.onlyForProvider) {
+    return true
+  }
+  
+  // If provider is configured but we don't know the current provider yet,
+  // be conservative and skip telemetry (it will be enabled after first chat.message)
+  if (!state.currentProvider) {
+    return false
+  }
+  
+  // Exact match on provider ID
+  return state.currentProvider === state.config.onlyForProvider
+}
 // ---------------------------------------------------------------------------
 
 /**
@@ -221,6 +249,24 @@ export function handleEvent(
 
   // --- Skip everything else when telemetry is disabled ---
   if (!state.enabled) return
+  
+  // --- Capture provider from chat.message events ---
+  if (event.type === "chat.message") {
+    const model = event.properties?.model
+    if (model?.providerID) {
+      state.currentProvider = model.providerID
+      state.log.debug("captured model provider", { provider: model.providerID })
+    }
+  }
+  
+  // --- Check provider filtering ---
+  if (!shouldEmitTelemetry(state)) {
+    state.log.debug("skipping telemetry - provider filter mismatch", {
+      currentProvider: state.currentProvider,
+      onlyForProvider: state.config.onlyForProvider,
+    })
+    return
+  }
 
   const { telemetry } = state
   const props = event.properties ?? {}

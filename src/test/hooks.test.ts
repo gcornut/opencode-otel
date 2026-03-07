@@ -1704,8 +1704,218 @@ describe("edge cases", () => {
 })
 
 // ===========================================================================
-// 11. Metric instrument metadata (descriptions, units)
+// 12. Provider filtering (onlyForProvider)
 // ===========================================================================
+
+describe("provider filtering", () => {
+  test("telemetry is skipped when onlyForProvider is set but no chat.message received", async () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // Before any chat.message, provider is unknown, so telemetry should be skipped
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    // No metrics should be emitted because provider is unknown
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(0)
+  })
+
+  test("telemetry is emitted when provider matches onlyForProvider", async () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // First, send a chat.message with matching provider
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "vertex", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    // Now telemetry should be enabled for vertex provider
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(1)
+    expect(h.state.currentProvider).toBe("vertex")
+  })
+
+  test("telemetry is skipped when provider does not match onlyForProvider", async () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // First, send a chat.message with non-matching provider
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    // Telemetry should be skipped for anthropic provider when we only want vertex
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(0)
+    expect(h.state.currentProvider).toBe("anthropic")
+  })
+
+  test("provider is captured from chat.message without model details", async () => {
+    const h = setup({ onlyForProvider: "anthropic" })
+
+    // chat.message without model info - provider stays undefined
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    // No model info means provider stays undefined, so telemetry is skipped
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(0)
+    expect(h.state.currentProvider).toBeUndefined()
+  })
+
+  test("provider filtering does not affect /otel command", () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // /otel command should work even when provider filter is set
+    h.emit({
+      type: "command.execute.before",
+      properties: { command: "otel", arguments: "off" },
+    })
+    expect(h.state.enabled).toBe(false)
+
+    h.emit({
+      type: "command.execute.before",
+      properties: { command: "otel", arguments: "on" },
+    })
+    expect(h.state.enabled).toBe(true)
+  })
+
+  test("provider is remembered across multiple events", async () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // First chat.message sets provider to vertex
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "vertex", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "first" }],
+      },
+    })
+
+    // Multiple events should all be emitted
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    h.emit({
+      type: "file.edited",
+      properties: { linesAdded: 10 },
+    })
+
+    await h.flush()
+
+    const sessionMetrics = h.getMetricsByName("opencode.session.count")
+    expect(sessionMetrics.length).toBe(1)
+
+    const locMetrics = h.getMetricsByName("opencode.lines_of_code.count")
+    expect(locMetrics.length).toBe(1)
+  })
+
+  test("provider can change between chat messages", async () => {
+    const h = setup({ onlyForProvider: "vertex" })
+
+    // First message with vertex
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "vertex", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "first" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test 1" } },
+    })
+
+    // Second message switches to anthropic
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "second" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-2", title: "Test 2" } },
+    })
+
+    await h.flush()
+
+    // Only first session should be emitted (vertex provider)
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(1)
+    expect(metrics[0].attributes["session.id"]).toBe("sess-1")
+  })
+
+  test("without onlyForProvider, all providers are allowed", async () => {
+    const h = setup() // no onlyForProvider
+
+    // chat.message with any provider should work
+    h.emit({
+      type: "chat.message",
+      properties: {
+        sessionID: "sess-1",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        parts: [{ type: "text", text: "hello" }],
+      },
+    })
+
+    h.emit({
+      type: "session.created",
+      properties: { info: { id: "sess-1", title: "Test" } },
+    })
+
+    await h.flush()
+
+    const metrics = h.getMetricsByName("opencode.session.count")
+    expect(metrics.length).toBe(1)
+  })
+})
 
 describe("metric instrument metadata", () => {
   test("all metrics have correct units", async () => {
